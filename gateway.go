@@ -56,6 +56,7 @@ type Gateway struct {
 	configFile          string
 	configContext       string
 	nodeAddressType     string
+	clientFiltering     bool
 	ExternalAddrFunc    func(request.Request) []dns.RR
 	resourceFilters     ResourceFilters
 
@@ -171,7 +172,17 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	log.Debugf("computed response addresses %v", addrs)
 	log.Debugf("computed response raws %v", raws)
 
-	// Fall through if no host matches
+	// If clientFiltering is enabled, narrow the address set to those that
+	// fall within the EDNS0 Client Subnet (ECS) carried in the request. If
+	// the request has no ECS option (or a malformed one), fail open: return
+	// the unfiltered set. If filtering removes every address, the fall-through
+	// check below treats it as a no-match exactly like an unmatched hostname.
+	if gw.clientFiltering {
+		addrs = filterAddressesByClientSubnet(state.Req, addrs)
+		log.Debugf("filtered response addresses %v", addrs)
+	}
+
+	// Fall through if no host matches (or if client-filtering emptied the set)
 	if len(addrs) == 0 && len(raws) == 0 && gw.Fall.Through(qname) {
 		return plugin.NextOrFailure(gw.Name(), gw.Next, ctx, w, r)
 	}

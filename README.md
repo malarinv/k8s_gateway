@@ -64,6 +64,8 @@ k8s_gateway [ZONES...]
     secondary SECONDARY
     kubeconfig KUBECONFIG [CONTEXT]
     fallthrough [ZONES...]
+    nodeAddressType [InternalIP|ExternalIP]
+    clientFiltering [BOOL]
 }
 ```
 
@@ -76,6 +78,8 @@ k8s_gateway [ZONES...]
 * `secondary` can be used to specify the optional apex record value of a peer nameserver running in the cluster (see `Dual Nameserver Deployment` section below).
 * `kubeconfig` can be used to connect to a remote Kubernetes cluster using a kubeconfig file. `CONTEXT` is optional, if not set, then the current context specified in kubeconfig will be used. It supports TLS, username and password, or token-based authentication.
 * `fallthrough` if zone matches and no record can be generated, pass request to the next plugin. If **[ZONES...]** is omitted, then fallthrough happens for all zones for which the plugin is authoritative. If specific zones are listed (for example `in-addr.arpa` and `ip6.arpa`), then only queries for those zones will be subject to fallthrough.
+* `nodeAddressType` can be `InternalIP` (default) or `ExternalIP`. Selects which `Node` address type is used when resolving Node-backed hostnames. Useful when `ExternalIP` is the routable address clients should reach.
+* `clientFiltering` if set to `true` (or bare `clientFiltering` with no argument), enables ECS-based answer filtering: when a query carries an [EDNS0 Client Subnet (ECS, RFC 7871)](https://datatracker.ietf.org/doc/html/rfc7871) option, only the response IPs whose network falls within the client's subnet (as derived from the option's `Address` and `SourceNetmask`) are returned. The mask is taken from the ECS option itself — no separate mask knob is configured here. This is designed to pair with a recursive resolver that injects ECS on behalf of real clients (e.g. Blocky's `ecs` block) so that `k8s_gateway` returns only the site-local A record reachable from the client's subnet, instead of every load-balancer IP across every site. If no ECS option is present, or the option is malformed, the response is unchanged (fail-open). If filtering strips every address, the request follows the normal `fallthrough` behaviour — so roaming clients outside any known subnet still resolve via the next plugin / upstream. Disabled by default.
 
 Example:
 
@@ -86,6 +90,7 @@ k8s_gateway example.com {
     apex exdns-1-k8s-gateway.kube-system
     secondary exdns-2-k8s-gateway.kube-system
     kubeconfig /.kube/config
+    clientFiltering true
 }
 ```
 
