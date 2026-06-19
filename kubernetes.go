@@ -929,6 +929,13 @@ func parseInterfaceAnnotation(val string) []ifaceEntry {
 		if err != nil || ipn == nil {
 			continue
 		}
+		// Skip /32 (and /31) entries — they are host routes / aliases
+		// (e.g. zerotier virtual IPs for LB routing), not real
+		// interface subnets, and would incorrectly swallow VIPs that
+		// should fail-open.
+		if ones, _ := ipn.Mask.Size(); ones >= 31 {
+			continue
+		}
 		ipStr := strings.SplitN(fields[1], "/", 2)[0]
 		ifaceIP := net.ParseIP(ipStr)
 		if ifaceIP == nil {

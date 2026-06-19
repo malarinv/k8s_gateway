@@ -244,6 +244,19 @@ func TestParseInterfaceAnnotation(t *testing.T) {
 	if !got[0].ifaceIP.Equal(net.ParseIP("192.168.15.112")) {
 		t.Errorf("first entry ifaceIP got %s, want 192.168.15.112", got[0].ifaceIP)
 	}
+	// /31 and /32 entries (host routes / aliases) must be skipped.
+	with32 := "lo\t127.0.0.1/8\nzt\t172.28.10.1/32\nzt\t172.28.110.103/16\n"
+	with32Enc := base64.StdEncoding.EncodeToString([]byte(with32))
+	got32 := parseInterfaceAnnotation(with32Enc)
+	if len(got32) != 2 {
+		t.Fatalf("expected 2 entries after skipping /32, got %d (%v)", len(got32), got32)
+	}
+	if !got32[0].ifaceIP.Equal(net.ParseIP("127.0.0.1")) {
+		t.Errorf("first entry ifaceIP got %s, want 127.0.0.1", got32[0].ifaceIP)
+	}
+	if !got32[1].ifaceIP.Equal(net.ParseIP("172.28.110.103")) {
+		t.Errorf("second entry ifaceIP got %s, want 172.28.110.103", got32[1].ifaceIP)
+	}
 }
 
 // TestServeDNS_ClientFilteringFallthrough exercises the full ServeDNS path:
