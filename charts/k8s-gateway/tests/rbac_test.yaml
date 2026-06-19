@@ -229,3 +229,61 @@ tests:
             resources:
               - nodes
         documentIndex: 0
+
+  - it: Should add nodes get+patch to ClusterRole when interfaceDiscovery.enabled and Node watched
+    set:
+      domain: example.com
+      watchedResources:
+        - Node
+      interfaceDiscovery:
+        enabled: true
+    template: templates/rbac.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - contains:
+          path: rules[1].resources
+          content: nodes
+        documentIndex: 0
+      - contains:
+          path: rules[1].verbs
+          content: list
+        documentIndex: 0
+      - contains:
+          path: rules[1].verbs
+          content: watch
+        documentIndex: 0
+      - contains:
+          path: rules[1].verbs
+          content: get
+        documentIndex: 0
+      - contains:
+          path: rules[1].verbs
+          content: patch
+        documentIndex: 0
+
+  - it: Should NOT add nodes get+patch when interfaceDiscovery is disabled even if Node watched
+    set:
+      domain: example.com
+      watchedResources:
+        - Node
+    template: templates/rbac.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - contains:
+          path: rules[1].verbs
+          content: list
+        documentIndex: 0
+      - contains:
+          path: rules[1].verbs
+          content: watch
+        documentIndex: 0
+      - notContains:
+          path: rules[1].verbs
+          content: get
+        documentIndex: 0
+      - notContains:
+          path: rules[1].verbs
+          content: patch
+        documentIndex: 0

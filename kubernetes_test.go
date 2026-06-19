@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -519,6 +521,90 @@ func TestLookupNodeIndexNoHostname(t *testing.T) {
 	results, _ := lookup([]string{"node-no-hostname"})
 	if len(results) != 0 {
 		t.Errorf("expected no results for node without NodeHostName, got: %v", results)
+	}
+}
+
+// TestBuildNodeInterfaceLookup exercises the informer-backed lookup used by
+// clientFiltering: a candidate IP that matches a node's interface annotation
+// entry must resolve to that interface's real subnet; a candidate not on any
+// node interface (VIP) must return nil (fail-open).
+func TestBuildNodeInterfaceLookup(t *testing.T) {
+	// Decoded annotation body for sensecap-m4:
+	//   wlan0\t192.168.15.112/24
+	//   ztrtavkx6v\t172.28.110.103/16
+	// And for rpi1000:
+	//   eth0\t192.168.13.137/24
+	sensecapBody := "wlan0\t192.168.15.112/24\nztrtavkx6v\t172.28.110.103/16\n"
+	rpiBody := "eth0\t192.168.13.137/24\n"
+	nodes := []*core.Node{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "sensecap-m4",
+				Annotations: map[string]string{
+					interfaceAnnotationKey: base64.StdEncoding.EncodeToString([]byte(sensecapBody)),
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "rpi1000",
+				Annotations: map[string]string{
+					interfaceAnnotationKey: base64.StdEncoding.EncodeToString([]byte(rpiBody)),
+				},
+			},
+		},
+		// A node without the annotation must be skipped, not panic.
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "bare-node"},
+		},
+		// A node with an unreadable annotation must be skipped too.
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "bad-node",
+				Annotations: map[string]string{interfaceAnnotationKey: "!!! not base64 !!!"},
+			},
+		},
+	}
+	fakeIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	for _, n := range nodes {
+		if err := fakeIndexer.Add(n); err != nil {
+			t.Fatalf("failed to add node: %v", err)
+		}
+	}
+	fakeInformer := &fakeSharedIndexInformer{indexer: fakeIndexer}
+	lookup := buildNodeInterfaceLookup(fakeInformer)
+	tests := []struct {
+		name      string
+		candidate string
+		wantNil   bool
+		wantSub   string // subnet string, ignored when wantNil
+	}{
+		{name: "LAN candidate on rpi1000 eth0", candidate: "192.168.13.137", wantSub: "192.168.13.0/24"},
+		{name: "wLAN candidate on sensecap wlan0", candidate: "192.168.15.112", wantSub: "192.168.15.0/24"},
+		{name: "zerotier candidate on sensecap zt", candidate: "172.28.110.103", wantSub: "172.28.0.0/16"},
+		{name: "VIP not on any node interface → nil", candidate: "172.28.10.1", wantNil: true},
+		{name: "IP not on any node → nil", candidate: "8.8.8.8", wantNil: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, err := netip.ParseAddr(tc.candidate)
+			if err != nil {
+				t.Fatalf("parse candidate: %v", err)
+			}
+			got := lookup(addr)
+			if tc.wantNil {
+				if got != nil {
+					t.Fatalf("expected nil subnet for %s, got %s", tc.candidate, got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("expected subnet %s for %s, got nil", tc.wantSub, tc.candidate)
+			}
+			if got.String() != tc.wantSub {
+				t.Errorf("candidate %s: got subnet %s, want %s", tc.candidate, got, tc.wantSub)
+			}
+		})
 	}
 }
 

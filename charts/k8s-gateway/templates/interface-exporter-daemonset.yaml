@@ -1,0 +1,63 @@
+{{/* Template for the interface-exporter DaemonSet.
+     Gated behind .Values.interfaceDiscovery.enabled. When enabled, each node
+     runs a tiny container that writes its real interface subnets
+     (`ip -o -4 addr show`) base64-encoded into the
+     k8s-gateway.malarinv/interfaces Node annotation. k8s_gateway's Node
+     informer reads this annotation to drive ECS-based clientFiltering. */}}
+{{- if .Values.interfaceDiscovery }}
+{{- if .Values.interfaceDiscovery.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "k8s-gateway.fullname" . }}-interface-exporter
+  labels:
+    {{- include "k8s-gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: interface-exporter
+    {{- if .Values.customLabels }}
+    {{ toYaml .Values.customLabels | trim | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "k8s-gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: interface-exporter
+  template:
+    metadata:
+      labels:
+        {{- include "k8s-gateway.labels" . | nindent 8 }}
+        app.kubernetes.io/component: interface-exporter
+        {{- if .Values.customLabels }}
+        {{ toYaml .Values.customLabels | trim | nindent 8 }}
+        {{- end }}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: {{ include "k8s-gateway.serviceAccountName" . }}
+      tolerations:
+        - operator: Exists
+      containers:
+      - name: exporter
+        image: "{{ .Values.interfaceDiscovery.image.registry }}/{{ .Values.interfaceDiscovery.image.repository }}:{{ .Values.interfaceDiscovery.image.tag }}"
+        imagePullPolicy: {{ .Values.interfaceDiscovery.image.pullPolicy | default "IfNotPresent" }}
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -eu
+            while true; do
+              IFACES=$(ip -o -4 addr show | awk '{print $2"\t"$4}')
+              kubectl annotate node "${NODE_NAME}" \
+                "k8s-gateway.malarinv/interfaces=$(printf '%s' "${IFACES}" | base64 -w0)" \
+                --overwrite 2>/dev/null || true
+              sleep {{ .Values.interfaceDiscovery.interval | default 60 }}
+            done
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        securityContext:
+          {{- include "k8s-gateway.securityContext" . | nindent 10 }}
+        resources:
+          {{- toYaml .Values.interfaceDiscovery.resources | default .Values.resources | nindent 12 }}
+{{- end }}
+{{- end }}

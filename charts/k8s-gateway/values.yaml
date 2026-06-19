@@ -161,3 +161,19 @@ extraVolumeMounts: []
 #     mountPath: /etc/tsig
 #     subPath: tsig.key
 #     readOnly: true
+# interfaceDiscovery enables a per-node DaemonSet that exports each node's
+# real interface subnets (from `ip -o -4 addr show`) base64-encoded into
+# the k8s-gateway.malarinv/interfaces Node annotation. k8s_gateway reads
+# this annotation to drive ECS-based clientFiltering with correct, per-
+# interface netmasks (instead of relying on Blocky's global ipv4Mask).
+interfaceDiscovery:
+  enabled: false
+  image:
+    registry: docker.io
+    repository: alpine/k8s
+    tag: "1.32"
+    pullPolicy: IfNotPresent
+  # interval, in seconds, between annotation refreshes.
+  interval: 60
+  # resources defaults to .Values.resources when unset here.
+  resources: {}

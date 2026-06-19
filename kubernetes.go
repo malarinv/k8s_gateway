@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/netip"
@@ -38,6 +39,12 @@ const (
 	hostnameAnnotationKey            = "coredns.io/hostname"
 	externalDnsHostnameAnnotationKey = "external-dns.alpha.kubernetes.io/hostname"
 	ignoreLabelKey                   = "k8s-gateway.dns/ignore"
+	// interfaceAnnotationKey holds the base64-encoded output of
+	// `ip -o -4 addr show` (one "iface\tIP/prefix" line per address) for
+	// the node, written by the k8s-gateway-interface-exporter DaemonSet.
+	// Used by buildNodeInterfaceLookup to discover each node's real
+	// interface subnets for ECS-based client filtering.
+	interfaceAnnotationKey = "k8s-gateway.malarinv/interfaces"
 )
 
 var (
@@ -165,6 +172,11 @@ func newKubeController(ctx context.Context, c *kubernetes.Clientset, gw *gateway
 				cache.Indexers{nodeHostnameIndex: nodeHostnameIndexFunc},
 			)
 			resource.lookup = lookupNodeIndex(nodeController, core.NodeAddressType(originalGateway.nodeAddressType))
+			// Wire the interface-subnet lookup used by clientFiltering.
+			// Even when clientFiltering is disabled this is harmless: the
+			// closure is only invoked from filterAddressesByClientSubnet,
+			// which is itself only called when gw.clientFiltering is true.
+			originalGateway.nodeInterfaceLookup = buildNodeInterfaceLookup(nodeController)
 			ctrl.controllers = append(ctrl.controllers, nodeController)
 			log.Infof("Node controller initialized")
 		}
@@ -882,5 +894,82 @@ func lookupNodeIndex(ctrl cache.SharedIndexInformer, addrType core.NodeAddressTy
 			result = append(result, fetchNodeIPsByType(node.Status.Addresses, addrType)...)
 		}
 		return
+	}
+}
+
+// ifaceEntry pairs an interface IP (pre-mask, used to match candidate
+// addresses exactly) with the parsed subnet (post-mask, used for
+// "does this subnet contain the client IP?" membership tests).
+type ifaceEntry struct {
+	ifaceIP net.IP     // e.g. 192.168.15.112 (pre-mask)
+	subnet  *net.IPNet // e.g. 192.168.15.0/24 (post-mask)
+}
+
+// parseInterfaceAnnotation decodes the base64-encoded body of the
+// interfaceAnnotationKey annotation into a slice of ifaceEntry. Each non-empty
+// line is expected to come from `ip -o -4 addr show` in the form
+// "iface\tIP/prefix" (fields separated by runs of whitespace); the leading
+// interface name is ignored. Lines that fail to parse are silently skipped.
+// Returns nil if the value is not valid base64 or contains no usable entries.
+func parseInterfaceAnnotation(val string) []ifaceEntry {
+	decoded, err := base64.StdEncoding.DecodeString(val)
+	if err != nil {
+		return nil
+	}
+	var entries []ifaceEntry
+	for _, line := range strings.Split(string(decoded), "\n") {
+		if len(strings.TrimSpace(line)) == 0 {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		_, ipn, err := net.ParseCIDR(fields[1])
+		if err != nil || ipn == nil {
+			continue
+		}
+		ipStr := strings.SplitN(fields[1], "/", 2)[0]
+		ifaceIP := net.ParseIP(ipStr)
+		if ifaceIP == nil {
+			continue
+		}
+		entries = append(entries, ifaceEntry{ifaceIP: ifaceIP, subnet: ipn})
+	}
+	return entries
+}
+
+// buildNodeInterfaceLookup returns a lookup function backed by the Node
+// informer cache. Given a candidate address, it iterates all cached Nodes,
+// reads the interfaceAnnotationKey annotation, parses each line, and returns
+// the *net.IPNet of the interface whose IP exactly matches the candidate.
+// Returns nil when the candidate is not on any node's interface (e.g.
+// kube-vip / service VIPs) or when no node carries the annotation — callers
+// (filterAddressesByClientSubnet) treat nil as fail-open.
+func buildNodeInterfaceLookup(nodeInformer cache.SharedIndexInformer) nodeSubnetLookupFunc {
+	return func(candidate netip.Addr) *net.IPNet {
+		candidateIP := net.IP(candidate.AsSlice())
+		if candidateIP == nil {
+			return nil
+		}
+		for _, obj := range nodeInformer.GetIndexer().List() {
+			node, ok := obj.(*core.Node)
+			if !ok || node == nil {
+				continue
+			}
+			if node.Annotations == nil {
+				continue
+			}
+			annVal, ok := node.Annotations[interfaceAnnotationKey]
+			if !ok {
+				continue
+			}
+			for _, entry := range parseInterfaceAnnotation(annVal) {
+				if entry.ifaceIP.Equal(candidateIP) {
+					return entry.subnet
+				}
+			}
+		}
+		return nil
 	}
 }

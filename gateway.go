@@ -57,6 +57,7 @@ type Gateway struct {
 	configContext       string
 	nodeAddressType     string
 	clientFiltering     bool
+	nodeInterfaceLookup nodeSubnetLookupFunc
 	ExternalAddrFunc    func(request.Request) []dns.RR
 	resourceFilters     ResourceFilters
 
@@ -172,13 +173,16 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	log.Debugf("computed response addresses %v", addrs)
 	log.Debugf("computed response raws %v", raws)
 
-	// If clientFiltering is enabled, narrow the address set to those that
-	// fall within the EDNS0 Client Subnet (ECS) carried in the request. If
-	// the request has no ECS option (or a malformed one), fail open: return
-	// the unfiltered set. If filtering removes every address, the fall-through
-	// check below treats it as a no-match exactly like an unmatched hostname.
+	// If clientFiltering is enabled, narrow the address set to those whose
+	// node interface subnet contains the ECS client IP. Each candidate is
+	// looked up against the Node informer cache (populated from the
+	// "k8s-gateway.malarinv/interfaces" annotation); candidates not on any
+	// node interface (e.g. kube-vip / service VIPs) are kept (fail-open).
+	// If the request has no ECS option, fail open: return the unfiltered
+	// set. If filtering removes every address, the fall-through check below
+	// treats it as a no-match exactly like an unmatched hostname.
 	if gw.clientFiltering {
-		addrs = filterAddressesByClientSubnet(state.Req, addrs)
+		addrs = filterAddressesByClientSubnet(state.Req, addrs, gw.nodeInterfaceLookup)
 		log.Debugf("filtered response addresses %v", addrs)
 	}
 

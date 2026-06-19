@@ -73,6 +73,12 @@ rules:
   verbs:
   - list
   - watch
+  {{- if .Values.interfaceDiscovery }}
+  {{- if .Values.interfaceDiscovery.enabled }}
+  - get
+  - patch
+  {{- end }}
+  {{- end }}
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
