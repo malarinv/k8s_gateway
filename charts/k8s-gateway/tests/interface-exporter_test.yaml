@@ -1,0 +1,79 @@
+suite: Interface Exporter DaemonSet
+
+tests:
+  - it: Should not render the DaemonSet when interfaceDiscovery is disabled (default)
+    set:
+      domain: example.com
+    template: templates/interface-exporter-daemonset.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: Should not render the DaemonSet when Node is watched but interfaceDiscovery disabled
+    set:
+      domain: example.com
+      watchedResources:
+        - Node
+    template: templates/interface-exporter-daemonset.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: Should render the DaemonSet when interfaceDiscovery.enabled is true
+    set:
+      domain: example.com
+      interfaceDiscovery:
+        enabled: true
+    template: templates/interface-exporter-daemonset.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: DaemonSet
+      - equal:
+          path: spec.template.spec.hostNetwork
+          value: true
+      - equal:
+          path: spec.template.spec.dnsPolicy
+          value: ClusterFirstWithHostNet
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: k8s-gateway
+      - matchRegex:
+          path: spec.template.spec.containers[0].image
+          pattern: "^docker.io/alpine/k8s:1.32$"
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: "k8s-gateway\\.malarinv/interfaces"
+      - contains:
+          path: spec.template.spec.tolerations
+          content:
+            operator: Exists
+      - equal:
+          path: spec.template.spec.containers[0].env[0].name
+          value: NODE_NAME
+
+  - it: Should use custom image/values when overridden
+    set:
+      domain: example.com
+      interfaceDiscovery:
+        enabled: true
+        image:
+          registry: docker.io
+          repository: myrepo/kubectl
+          tag: "1.30"
+          pullPolicy: Always
+        interval: 30
+    template: templates/interface-exporter-daemonset.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "docker.io/myrepo/kubectl:1.30"
+      - equal:
+          path: spec.template.spec.containers[0].imagePullPolicy
+          value: Always
+      - matchRegex:
+          path: spec.template.spec.containers[0].args[0]
+          pattern: "sleep 30$"

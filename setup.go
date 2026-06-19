@@ -147,6 +147,25 @@ func parse(c *caddy.Controller) (*Gateway, error) {
 				}
 				gw.nodeAddressType = args[0]
 
+			case "clientFiltering":
+				// clientFiltering enables ECS-based answer filtering: when an
+				// EDNS0 Client Subnet option is present in the query, only
+				// response IPs within the client's subnet are returned. The
+				// mask is taken from the ECS option itself (SourceNetmask), so
+				// no separate mask knob is required. If no ECS option is
+				// present the response is unchanged (fail-open).
+				args := c.RemainingArgs()
+				if len(args) == 0 {
+					// bare `clientFiltering` → enable
+					gw.clientFiltering = true
+					continue
+				}
+				v, err := strconv.ParseBool(args[0])
+				if err != nil {
+					return nil, c.Errf("clientFiltering must be a boolean, got: %s", args[0])
+				}
+				gw.clientFiltering = v
+
 			default:
 				return nil, c.Errf("Unknown property '%s'", c.Val())
 			}
