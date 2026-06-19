@@ -166,6 +166,16 @@ func parse(c *caddy.Controller) (*Gateway, error) {
 				}
 				gw.clientFiltering = v
 
+			case "clientFilteringMode":
+				args := c.RemainingArgs()
+				if len(args) != 1 {
+					return nil, c.ArgErr()
+				}
+				if args[0] != "failOpen" && args[0] != "strict" {
+					return nil, c.Errf("clientFilteringMode must be 'failOpen' or 'strict', got: %s", args[0])
+				}
+				gw.clientFilteringMode = args[0]
+
 			default:
 				return nil, c.Errf("Unknown property '%s'", c.Val())
 			}

@@ -180,7 +180,83 @@ func TestFilterAddressesByClientSubnet(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := filterAddressesByClientSubnet(tc.req, tc.in, tc.lookup)
+			got := filterAddressesByClientSubnet(tc.req, tc.in, tc.lookup, "failOpen")
+			gotStrs := addrsToStrings(got)
+			if len(gotStrs) != len(tc.want) {
+				t.Fatalf("len mismatch: got %d (%v), want %d (%v)", len(gotStrs), gotStrs, len(tc.want), tc.want)
+			}
+			for i := range gotStrs {
+				if gotStrs[i] != tc.want[i] {
+					t.Errorf("idx %d: got %s, want %s", i, gotStrs[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestFilterAddressesByClientSubnetStrictMode verifies that strict mode drops
+// candidates whose subnet is unknown (VIPs / aliases) while keeping path 1
+// (no ECS) and path 2 (lookup nil) fail-open for safety.
+func TestFilterAddressesByClientSubnetStrictMode(t *testing.T) {
+	nodeInterfaces := map[string]string{
+		"192.168.13.137": "192.168.13.0/24",
+		"192.168.15.112": "192.168.15.0/24",
+	}
+
+	tests := []struct {
+		name   string
+		req    *dns.Msg
+		in     []netip.Addr
+		lookup nodeSubnetLookupFunc
+		want   []string
+	}{
+		{
+			name:   "LAN client drops VIP, keeps matching LAN",
+			req:    msgWithECS(t, 1, "192.168.13.167", 32),
+			in:     []netip.Addr{mustAddr("192.168.13.137"), mustAddr("172.28.10.1")},
+			lookup: lookupFromMap(nodeInterfaces),
+			want:   []string{"192.168.13.137"},
+		},
+		{
+			name:   "zerotier client drops LAN and VIP",
+			req:    msgWithECS(t, 1, "172.28.110.103", 32),
+			in:     []netip.Addr{mustAddr("192.168.13.137"), mustAddr("172.28.10.1")},
+			lookup: lookupFromMap(nodeInterfaces),
+			want:   []string{},
+		},
+		{
+			name:   "roaming client drops everything",
+			req:    msgWithECS(t, 1, "8.8.8.8", 32),
+			in:     []netip.Addr{mustAddr("192.168.13.137"), mustAddr("172.28.10.1")},
+			lookup: lookupFromMap(nodeInterfaces),
+			want:   []string{},
+		},
+		{
+			name:   "ECS absent remains fail-open even in strict mode",
+			req:    msgWithoutECS(),
+			in:     []netip.Addr{mustAddr("192.168.13.137"), mustAddr("172.28.10.1")},
+			lookup: lookupFromMap(nodeInterfaces),
+			want:   []string{"192.168.13.137", "172.28.10.1"},
+		},
+		{
+			name:   "lookup nil remains fail-open even in strict mode",
+			req:    msgWithECS(t, 1, "192.168.13.167", 32),
+			in:     []netip.Addr{mustAddr("192.168.13.137"), mustAddr("192.168.15.112")},
+			lookup: nil,
+			want:   []string{"192.168.13.137", "192.168.15.112"},
+		},
+		{
+			name:   "all candidates are VIPs → empty",
+			req:    msgWithECS(t, 1, "192.168.13.167", 32),
+			in:     []netip.Addr{mustAddr("172.28.10.1"), mustAddr("10.0.0.1")},
+			lookup: lookupFromMap(map[string]string{}),
+			want:   []string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterAddressesByClientSubnet(tc.req, tc.in, tc.lookup, "strict")
 			gotStrs := addrsToStrings(got)
 			if len(gotStrs) != len(tc.want) {
 				t.Fatalf("len mismatch: got %d (%v), want %d (%v)", len(gotStrs), gotStrs, len(tc.want), tc.want)

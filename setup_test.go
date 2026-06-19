@@ -149,3 +149,79 @@ func TestServiceLabelSelectorParsing(t *testing.T) {
 		}
 	}
 }
+
+func TestClientFilteringModeParsing(t *testing.T) {
+	tests := []struct {
+		input                 string
+		shouldErr             bool
+		expectedErr           string
+		expectedFiltering     bool
+		expectedFilteringMode string
+	}{
+		{
+			input: `k8s_gateway example.org {
+	clientFiltering true
+}`,
+			shouldErr:             false,
+			expectedFiltering:     true,
+			expectedFilteringMode: "failOpen",
+		},
+		{
+			input: `k8s_gateway example.org {
+	clientFiltering true
+	clientFilteringMode strict
+}`,
+			shouldErr:             false,
+			expectedFiltering:     true,
+			expectedFilteringMode: "strict",
+		},
+		{
+			input: `k8s_gateway example.org {
+	clientFilteringMode failOpen
+}`,
+			shouldErr:             false,
+			expectedFiltering:     false,
+			expectedFilteringMode: "failOpen",
+		},
+		{
+			input: `k8s_gateway example.org {
+	clientFilteringMode unknown
+}`,
+			shouldErr:   true,
+			expectedErr: "must be 'failOpen' or 'strict'",
+		},
+		{
+			input: `k8s_gateway example.org {
+	clientFilteringMode
+}`,
+			shouldErr:   true,
+			expectedErr: "Wrong argument count",
+		},
+	}
+
+	for i, test := range tests {
+		c := caddy.NewTestController("dns", test.input)
+		gw, err := parse(c)
+
+		if test.shouldErr {
+			if err == nil {
+				t.Errorf("Test %d: Expected error for input %s", i, test.input)
+			} else if test.expectedErr != "" && !strings.Contains(err.Error(), test.expectedErr) {
+				t.Errorf("Test %d: Expected error containing %q, got: %v", i, test.expectedErr, err)
+			}
+			continue
+		}
+
+		if err != nil {
+			t.Errorf("Test %d: Unexpected error for input %s: %v", i, test.input, err)
+			continue
+		}
+
+		if gw.clientFiltering != test.expectedFiltering {
+			t.Errorf("Test %d: Expected clientFiltering=%v, got %v", i, test.expectedFiltering, gw.clientFiltering)
+		}
+		if gw.clientFilteringMode != test.expectedFilteringMode {
+			t.Errorf("Test %d: Expected clientFilteringMode=%q, got %q", i, test.expectedFilteringMode, gw.clientFilteringMode)
+		}
+	}
+}

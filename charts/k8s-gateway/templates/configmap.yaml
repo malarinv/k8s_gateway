@@ -42,6 +42,12 @@ data:
           {{- if .Values.fallthrough.enabled }}
           fallthrough {{- range .Values.fallthrough.zones }} {{ . }} {{- end }}
           {{- end }}
+          {{- if .Values.clientFiltering }}
+          clientFiltering true
+          {{- end }}
+          {{- if .Values.clientFilteringMode }}
+          clientFilteringMode {{ .Values.clientFilteringMode }}
+          {{- end }}
         }
         {{- range .Values.extraZonePlugins }}
         {{ .name }}{{ if .parameters }} {{ .parameters }}{{ end }}{{ if .configBlock }} { {{ .configBlock | nindent 10 }}

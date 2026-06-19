@@ -43,6 +43,23 @@ tests:
       - matchRegex:
           path: data.Corefile
           pattern: "resources Service Ingress"
+  - it: Should render ConfigMap with clientFiltering and clientFilteringMode
+    set:
+      domain: "example.com"
+      watchedResources:
+        - Service
+      clientFiltering: true
+      clientFilteringMode: strict
+    template: templates/configmap.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - matchRegex:
+          path: data.Corefile
+          pattern: "clientFiltering true"
+      - matchRegex:
+          path: data.Corefile
+          pattern: "clientFilteringMode strict"
   - it: Should render ConfigMap with fallthrough if set
     set:
       domain: "example.com"

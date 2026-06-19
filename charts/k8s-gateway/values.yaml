@@ -35,11 +35,18 @@ resources: {}
 
 # Limit what kind of resources to watch, e.g. watchedResources: ["Ingress"]
 watchedResources: ["Ingress", "Service"]
-
 filters:
   ingressClasses: []
   gatewayClasses: []
   serviceLabelSelectors: []
+
+# Enable ECS-based client subnet filtering (requires a recursive resolver
+# that injects EDNS0 Client Subnet, e.g. Blocky with ecs.useAsClient=true).
+clientFiltering: false
+# Mode for unknown/VIP candidates when clientFiltering is enabled.
+#   failOpen  = keep unknown candidates (default, backward-compatible)
+#   strict    = drop unknown candidates (VIPs, stale IPs)
+clientFilteringMode: ""
 
 # Service name of a secondary DNS server (should be `serviceName.namespace`)
 secondary: ""

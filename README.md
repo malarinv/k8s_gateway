@@ -63,9 +63,9 @@ k8s_gateway [ZONES...]
     apex APEX
     secondary SECONDARY
     kubeconfig KUBECONFIG [CONTEXT]
-    fallthrough [ZONES...]
     nodeAddressType [InternalIP|ExternalIP]
     clientFiltering [BOOL]
+    clientFilteringMode [failOpen|strict]
 }
 ```
 
@@ -78,8 +78,8 @@ k8s_gateway [ZONES...]
 * `secondary` can be used to specify the optional apex record value of a peer nameserver running in the cluster (see `Dual Nameserver Deployment` section below).
 * `kubeconfig` can be used to connect to a remote Kubernetes cluster using a kubeconfig file. `CONTEXT` is optional, if not set, then the current context specified in kubeconfig will be used. It supports TLS, username and password, or token-based authentication.
 * `fallthrough` if zone matches and no record can be generated, pass request to the next plugin. If **[ZONES...]** is omitted, then fallthrough happens for all zones for which the plugin is authoritative. If specific zones are listed (for example `in-addr.arpa` and `ip6.arpa`), then only queries for those zones will be subject to fallthrough.
-* `nodeAddressType` can be `InternalIP` (default) or `ExternalIP`. Selects which `Node` address type is used when resolving Node-backed hostnames. Useful when `ExternalIP` is the routable address clients should reach.
-* `clientFiltering` if set to `true` (or bare `clientFiltering` with no argument), enables ECS-based answer filtering: when a query carries an [EDNS0 Client Subnet (ECS, RFC 7871)](https://datatracker.ietf.org/doc/html/rfc7871) option, only the response IPs whose network falls within the client's subnet (as derived from the option's `Address` and `SourceNetmask`) are returned. The mask is taken from the ECS option itself — no separate mask knob is configured here. This is designed to pair with a recursive resolver that injects ECS on behalf of real clients (e.g. Blocky's `ecs` block) so that `k8s_gateway` returns only the site-local A record reachable from the client's subnet, instead of every load-balancer IP across every site. If no ECS option is present, or the option is malformed, the response is unchanged (fail-open). If filtering strips every address, the request follows the normal `fallthrough` behaviour — so roaming clients outside any known subnet still resolve via the next plugin / upstream. Disabled by default.
+* `clientFiltering` if set to `true` (or bare `clientFiltering` with no argument), enables ECS-based answer filtering: when a query carries an [EDNS0 Client Subnet (ECS, RFC 7871)](https://datatracker.ietf.org/doc/html/rfc7871) option, only the response IPs whose network falls within the client's subnet (as derived from the option's `Address` and `SourceNetmask`) are returned. The mask is taken from the ECS option itself — no separate mask knob is configured here. This is designed to pair with a recursive resolver that injects ECS on behalf of real clients (e.g. Blocky's `ecs` block) so that `k8s_gateway` returns only the site-local A record reachable from the client's subnet, instead of every load-balancer IP across every site. If no ECS option is present, the response is returned unchanged (fail-open). If the Node informer has not yet populated interface data, all candidates are kept (fail-open). If a candidate IP is not present on any node's interface (e.g. kube-vip, service VIP, or an address from a dead node with no annotation), it is kept by default (fail-open); use `clientFilteringMode strict` to drop such unknown candidates.
+* `clientFilteringMode` controls the behavior when `clientFiltering` is enabled and a candidate IP cannot be matched to any node's interface subnet. `failOpen` (default) keeps the candidate, preserving backward-compatibility. `strict` drops the candidate, which prevents VIPs and stale IPs from being returned to clients outside their actual site. Has no effect when `clientFiltering` is `false`.
 
 Example:
 
@@ -91,6 +91,7 @@ k8s_gateway example.com {
     secondary exdns-2-k8s-gateway.kube-system
     kubeconfig /.kube/config
     clientFiltering true
+    clientFilteringMode strict
 }
 ```
 

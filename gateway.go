@@ -57,6 +57,7 @@ type Gateway struct {
 	configContext       string
 	nodeAddressType     string
 	clientFiltering     bool
+	clientFilteringMode string
 	nodeInterfaceLookup nodeSubnetLookupFunc
 	ExternalAddrFunc    func(request.Request) []dns.RR
 	resourceFilters     ResourceFilters
@@ -88,6 +89,7 @@ func newGateway() *Gateway {
 		secondNS:            defaultSecondNS,
 		hostmaster:          defaultHostmaster,
 		nodeAddressType:     "InternalIP",
+		clientFilteringMode: "failOpen",
 	}
 }
 
@@ -182,7 +184,7 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	// set. If filtering removes every address, the fall-through check below
 	// treats it as a no-match exactly like an unmatched hostname.
 	if gw.clientFiltering {
-		addrs = filterAddressesByClientSubnet(state.Req, addrs, gw.nodeInterfaceLookup)
+		addrs = filterAddressesByClientSubnet(state.Req, addrs, gw.nodeInterfaceLookup, gw.clientFilteringMode)
 		log.Debugf("filtered response addresses %v", addrs)
 	}
 

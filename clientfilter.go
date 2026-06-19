@@ -31,7 +31,7 @@ type nodeSubnetLookupFunc func(netip.Addr) *net.IPNet
 // forward ipv4Mask:32 the full client IP is carried as the ECS address, and
 // the filter's job is to compare that client IP against the *real* interface
 // subnet of the node hosting each candidate.
-func filterAddressesByClientSubnet(req *dns.Msg, addrs []netip.Addr, lookup nodeSubnetLookupFunc) []netip.Addr {
+func filterAddressesByClientSubnet(req *dns.Msg, addrs []netip.Addr, lookup nodeSubnetLookupFunc, mode string) []netip.Addr {
 	if len(addrs) == 0 {
 		return addrs
 	}
@@ -49,7 +49,10 @@ func filterAddressesByClientSubnet(req *dns.Msg, addrs []netip.Addr, lookup node
 		}
 		subnet := lookup(addr)
 		if subnet == nil {
-			// Candidate is a VIP / not on any node interface → fail-open.
+			// Candidate is a VIP / not on any node interface.
+			if mode == "strict" {
+				continue // drop
+			}
 			kept = append(kept, addr)
 			continue
 		}
