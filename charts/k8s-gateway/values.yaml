@@ -171,7 +171,7 @@ interfaceDiscovery:
   image:
     registry: docker.io
     repository: alpine/k8s
-    tag: "1.32"
+    tag: "1.33.13"
     pullPolicy: IfNotPresent
   # interval, in seconds, between annotation refreshes.
   interval: 60

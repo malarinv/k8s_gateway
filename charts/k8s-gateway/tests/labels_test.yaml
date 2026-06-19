@@ -10,6 +10,23 @@ tests:
       customLabels:
         foo: bar
         env: test
+    template: templates/deployment.yaml
+    asserts:
+      - equal:
+          path: metadata.labels.foo
+          value: bar
+      - equal:
+          path: metadata.labels.env
+          value: test
+  - it: Should apply custom labels to interface-exporter when enabled
+    set:
+      domain: example.com
+      customLabels:
+        foo: bar
+        env: test
+      interfaceDiscovery:
+        enabled: true
+    template: templates/interface-exporter-daemonset.yaml
     asserts:
       - equal:
           path: metadata.labels.foo

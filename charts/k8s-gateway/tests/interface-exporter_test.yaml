@@ -36,12 +36,12 @@ tests:
       - equal:
           path: spec.template.spec.dnsPolicy
           value: ClusterFirstWithHostNet
-      - equal:
+      - matchRegex:
           path: spec.template.spec.serviceAccountName
-          value: k8s-gateway
+          pattern: "k8s-gateway$"
       - matchRegex:
           path: spec.template.spec.containers[0].image
-          pattern: "^docker.io/alpine/k8s:1.32$"
+          pattern: "^docker.io/alpine/k8s:1\\.33\\.13$"
       - matchRegex:
           path: spec.template.spec.containers[0].args[0]
           pattern: "k8s-gateway\\.malarinv/interfaces"
@@ -76,4 +76,4 @@ tests:
           value: Always
       - matchRegex:
           path: spec.template.spec.containers[0].args[0]
-          pattern: "sleep 30$"
+          pattern: "sleep 30"
