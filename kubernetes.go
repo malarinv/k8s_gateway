@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/miekg/dns"
 	core "k8s.io/api/core/v1"
@@ -28,7 +29,7 @@ import (
 )
 
 const (
-	defaultResyncPeriod              = 0
+	defaultResyncPeriod              = 5 * time.Minute
 	ingressHostnameIndex             = "ingressHostname"
 	serviceHostnameIndex             = "serviceHostname"
 	gatewayUniqueIndex               = "gatewayIndex"
