@@ -178,7 +178,7 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	// If clientFiltering is enabled, narrow the address set to those whose
 	// node interface subnet contains the ECS client IP. Each candidate is
 	// looked up against the Node informer cache (populated from the
-	// "k8s-gateway.malarinv/interfaces" annotation); candidates not on any
+	// "k8s-gateway.whiteblossom.net/interfaces" annotation); candidates not on any
 	// node interface (e.g. kube-vip / service VIPs) are kept (fail-open).
 	// If the request has no ECS option, fail open: return the unfiltered
 	// set. If filtering removes every address, the fall-through check below

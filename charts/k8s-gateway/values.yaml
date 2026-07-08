@@ -170,7 +170,7 @@ extraVolumeMounts: []
 #     readOnly: true
 # interfaceDiscovery enables a per-node DaemonSet that exports each node's
 # real interface subnets (from `ip -o -4 addr show`) base64-encoded into
-# the k8s-gateway.malarinv/interfaces Node annotation. k8s_gateway reads
+# the k8s-gateway.whiteblossom.net/interfaces Node annotation. k8s_gateway reads
 # this annotation to drive ECS-based clientFiltering with correct, per-
 # interface netmasks (instead of relying on Blocky's global ipv4Mask).
 interfaceDiscovery:

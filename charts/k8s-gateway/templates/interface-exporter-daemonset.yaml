@@ -2,7 +2,7 @@
      Gated behind .Values.interfaceDiscovery.enabled. When enabled, each node
      runs a tiny container that writes its real interface subnets
      (`ip -o -4 addr show`) base64-encoded into the
-     k8s-gateway.malarinv/interfaces Node annotation. k8s_gateway's Node
+    k8s-gateway.whiteblossom.net/interfaces Node annotation. k8s_gateway's Node
      informer reads this annotation to drive ECS-based clientFiltering. */}}
 {{- if .Values.interfaceDiscovery }}
 {{- if .Values.interfaceDiscovery.enabled }}
@@ -44,9 +44,25 @@ spec:
           - |
             set -eu
             while true; do
-              IFACES=$(ip -o -4 addr show | awk '{print $2"\t"$4}')
+              # Capture ExternalIP interface
+              EXT_IFACE=$(ip -o -4 addr show | awk '{print $2"\t"$4}' \
+                | grep -E "^[^\t]*\t[0-9]" | head -1)
+
+              # Capture ZeroTier interface (zt* prefix = ZeroTier's standard naming)
+              ZT_IFACE=$(ip -o -4 addr show | awk '{print $2"\t"$4}' | grep -E "^[^\t]*\t[0-9]" \
+                | while read line; do
+                    iface=$(echo "$line" | cut -f1)
+                    if [ "${iface#zt}" != "$iface" ]; then
+                      echo "$line"
+                      break  # primary address only (the /16, not /32 peer routes)
+                    fi
+                  done)
+
+              # Combine: ExternalIP interface + ZeroTier interface
+              IFACE_LINE=$(printf '%s\n%s' "$EXT_IFACE" "$ZT_IFACE" | sort -u | grep -v '^$')
+
               kubectl annotate node "${NODE_NAME}" \
-                "k8s-gateway.malarinv/interfaces=$(printf '%s' "${IFACES}" | base64 -w0)" \
+                "k8s-gateway.whiteblossom.net/interfaces=$(printf '%s' "${IFACE_LINE}" | base64 -w0)" \
                 --overwrite 2>/dev/null || true
               sleep {{ .Values.interfaceDiscovery.interval | default 60 }}
             done

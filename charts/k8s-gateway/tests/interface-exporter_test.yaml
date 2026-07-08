@@ -44,7 +44,7 @@ tests:
           pattern: "^docker.io/alpine/k8s:1\\.33\\.13$"
       - matchRegex:
           path: spec.template.spec.containers[0].args[0]
-          pattern: "k8s-gateway\\.malarinv/interfaces"
+          pattern: "k8s-gateway\\.whiteblossom\\.net/interfaces"
       - contains:
           path: spec.template.spec.tolerations
           content:

@@ -11,7 +11,7 @@ import (
 // owns the given candidate address, or nil if no node's interface carries
 // that exact IP (e.g. kube-vip / service VIPs). The lookup is backed by the
 // Node informer cache populated from the
-// "k8s-gateway.malarinv/interfaces" annotation; see buildNodeInterfaceLookup.
+// "k8s-gateway.whiteblossom.net/interfaces" annotation; see buildNodeInterfaceLookup.
 type nodeSubnetLookupFunc func(netip.Addr) *net.IPNet
 
 // filterAddressesByClientSubnet narrows addrs to those whose own node

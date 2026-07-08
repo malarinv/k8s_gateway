@@ -45,7 +45,7 @@ const (
 	// the node, written by the k8s-gateway-interface-exporter DaemonSet.
 	// Used by buildNodeInterfaceLookup to discover each node's real
 	// interface subnets for ECS-based client filtering.
-	interfaceAnnotationKey = "k8s-gateway.malarinv/interfaces"
+	interfaceAnnotationKey = "k8s-gateway.whiteblossom.net/interfaces"
 )
 
 var (
