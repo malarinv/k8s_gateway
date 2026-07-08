@@ -582,7 +582,7 @@ func TestBuildNodeInterfaceLookup(t *testing.T) {
 		{name: "LAN candidate on rpi1000 eth0", candidate: "192.168.13.137", wantSub: "192.168.13.0/24"},
 		{name: "wLAN candidate on sensecap wlan0", candidate: "192.168.15.112", wantSub: "192.168.15.0/24"},
 		{name: "zerotier candidate on sensecap zt", candidate: "172.28.110.103", wantSub: "172.28.0.0/16"},
-		{name: "VIP not on any node interface → nil", candidate: "172.28.10.1", wantNil: true},
+		{name: "zerotier peer IP within sensecap /16", candidate: "172.28.10.1", wantSub: "172.28.0.0/16"},
 		{name: "IP not on any node → nil", candidate: "8.8.8.8", wantNil: true},
 	}
 	for _, tc := range tests {

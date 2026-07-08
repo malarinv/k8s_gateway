@@ -950,10 +950,25 @@ func parseInterfaceAnnotation(val string) []ifaceEntry {
 // buildNodeInterfaceLookup returns a lookup function backed by the Node
 // informer cache. Given a candidate address, it iterates all cached Nodes,
 // reads the interfaceAnnotationKey annotation, parses each line, and returns
-// the *net.IPNet of the interface whose IP exactly matches the candidate.
-// Returns nil when the candidate is not on any node's interface (e.g.
-// kube-vip / service VIPs) or when no node carries the annotation — callers
-// (filterAddressesByClientSubnet) treat nil as fail-open.
+// the *net.IPNet of any interface subnet that contains the candidate IP.
+//
+// This uses subnet containment (entry.subnet.Contains(candidateIP)) rather
+// than exact IP matching (entry.ifaceIP.Equal(candidateIP)) because:
+//
+//  1. VPN / overlay networks (e.g. ZeroTier): A node's ZT interface has a
+//     single address (e.g. 172.28.110.103/16), but Ingress/Service candidates
+//     may be ZT peer IPs (e.g. 172.28.10.1) that fall within the /16 but
+//     aren't the node's own address. Exact matching returns nil for these,
+//     causing strict mode to incorrectly drop reachable ZT services.
+//
+//  2. VIPs in the same subnet: kube-vip or MetalLB VIPs that happen to be in
+//     a node's subnet (e.g. 172.28.8.8 in 172.28.110.103/16) should be
+//     reachable from clients on that subnet. Exact matching returns nil,
+//     dropping them in strict mode.
+//
+// Returns nil when the candidate is not on any node's subnet (e.g. LAN VIPs
+// outside any node's interface range) or when no node carries the annotation
+// — callers (filterAddressesByClientSubnet) treat nil as fail-open.
 func buildNodeInterfaceLookup(nodeInformer cache.SharedIndexInformer) nodeSubnetLookupFunc {
 	return func(candidate netip.Addr) *net.IPNet {
 		candidateIP := net.IP(candidate.AsSlice())
@@ -973,7 +988,11 @@ func buildNodeInterfaceLookup(nodeInformer cache.SharedIndexInformer) nodeSubnet
 				continue
 			}
 			for _, entry := range parseInterfaceAnnotation(annVal) {
-				if entry.ifaceIP.Equal(candidateIP) {
+				// Use subnet containment instead of exact IP match.
+				// This allows ZT peer IPs and VIPs within the subnet
+				// to be resolved to the correct interface subnet,
+				// enabling proper client filtering for VPN clients.
+				if entry.subnet.Contains(candidateIP) {
 					return entry.subnet
 				}
 			}

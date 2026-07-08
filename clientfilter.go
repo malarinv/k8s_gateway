@@ -7,11 +7,11 @@ import (
 	"github.com/miekg/dns"
 )
 
-// nodeSubnetLookupFunc returns the *net.IPNet of the node interface that
-// owns the given candidate address, or nil if no node's interface carries
-// that exact IP (e.g. kube-vip / service VIPs). The lookup is backed by the
-// Node informer cache populated from the
-// "k8s-gateway.whiteblossom.net/interfaces" annotation; see buildNodeInterfaceLookup.
+// nodeSubnetLookupFunc returns the *net.IPNet of the node interface subnet
+// that contains the given candidate address, or nil if no node's interface
+// subnet contains it. The lookup uses subnet containment (not exact IP match)
+// to support VPN/overlay networks where candidates may be peer IPs within a
+// node's subnet. See buildNodeInterfaceLookup for details.
 type nodeSubnetLookupFunc func(netip.Addr) *net.IPNet
 
 // filterAddressesByClientSubnet narrows addrs to those whose own node
@@ -21,9 +21,9 @@ type nodeSubnetLookupFunc func(netip.Addr) *net.IPNet
 //   - If addrs is empty or the request carries no usable ECS option, return
 //     addrs unchanged (fail-open).
 //   - For each candidate address, ask nodeSubnetLookup for the subnet of
-//     the node interface that owns that candidate.
-//   - If the lookup returns nil (candidate is a VIP, not on any node's
-//     interface), keep it (fail-open).
+//     the node interface that contains that candidate.
+//   - If the lookup returns nil (candidate is not in any node's subnet),
+//     keep it (fail-open).
 //   - Otherwise keep the candidate only if the ECS client IP falls within
 //     the returned subnet.
 //
