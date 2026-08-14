@@ -176,6 +176,18 @@ func parse(c *caddy.Controller) (*Gateway, error) {
 				}
 				gw.clientFilteringMode = args[0]
 
+			case "ingressClusterIPFallback":
+				args := c.RemainingArgs()
+				if len(args) == 0 {
+					gw.ingressClusterIPFallback = true
+					continue
+				}
+				v, err := strconv.ParseBool(args[0])
+				if err != nil {
+					return nil, c.Errf("ingressClusterIPFallback must be a boolean, got: %s", args[0])
+				}
+				gw.ingressClusterIPFallback = v
+
 			default:
 				return nil, c.Errf("Unknown property '%s'", c.Val())
 			}

@@ -315,6 +315,28 @@ tests:
       - notMatchRegex:
           path: data.Corefile
           pattern: "serviceLabelSelectors"
+  - it: Should render ConfigMap with ingressClusterIPFallback
+    set:
+      domain: "example.com"
+      ingressClusterIPFallback: true
+    template: templates/configmap.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - matchRegex:
+          path: data.Corefile
+          pattern: "ingressClusterIPFallback true"
+  - it: Should not render ingressClusterIPFallback when disabled
+    set:
+      domain: "example.com"
+      ingressClusterIPFallback: false
+    template: templates/configmap.yaml
+    asserts:
+      - hasDocuments:
+          count: 1
+      - notMatchRegex:
+          path: data.Corefile
+          pattern: "ingressClusterIPFallback"
   - it: Should render ConfigMap without scheme prefix when empty
     set:
       domain: "example.com"

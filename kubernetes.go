@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -50,6 +51,11 @@ const (
 
 var (
 	apiextensionsClient *apiextensionsclientset.Clientset
+)
+
+var (
+	ingressClusterIPOnce  sync.Once
+	ingressClusterIPCache netip.Addr
 )
 
 // KubeController stores the current runtime configuration and cache
@@ -115,7 +121,8 @@ func newKubeController(ctx context.Context, c *kubernetes.Clientset, gw *gateway
 		}
 	}
 
-	for _, resourceName := range []string{"Ingress", "Service"} {
+	var serviceControllers []cache.SharedIndexInformer
+	for _, resourceName := range []string{"Service", "Ingress"} {
 		if slices.Contains(dereferenceStrings(originalGateway.ConfiguredResources), resourceName) {
 			if resource := originalGateway.lookupResource(resourceName); resource != nil {
 				switch resourceName {
@@ -129,7 +136,7 @@ func newKubeController(ctx context.Context, c *kubernetes.Clientset, gw *gateway
 						defaultResyncPeriod,
 						cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc},
 					)
-					resource.lookup = lookupIngressIndex(ingressController, originalGateway.resourceFilters.ingressClasses)
+					resource.lookup = lookupIngressIndex(ingressController, originalGateway.resourceFilters.ingressClasses, originalGateway.ingressClusterIPFallback, serviceControllers, ctrl.client)
 					ctrl.controllers = append(ctrl.controllers, ingressController)
 					log.Infof("Ingress controller initialized")
 
@@ -138,7 +145,6 @@ func newKubeController(ctx context.Context, c *kubernetes.Clientset, gw *gateway
 					if len(selectors) == 0 {
 						selectors = []string{""}
 					}
-					var serviceControllers []cache.SharedIndexInformer
 					for _, sel := range selectors {
 						sc := cache.NewSharedIndexInformer(
 							&cache.ListWatch{
@@ -706,7 +712,7 @@ func lookupGateways(gw cache.SharedIndexInformer, refs []gatewayapi_v1.ParentRef
 	return
 }
 
-func lookupIngressIndex(ctrl cache.SharedIndexInformer, ingclasses []string) func([]string) (results []netip.Addr, raws []string) {
+func lookupIngressIndex(ctrl cache.SharedIndexInformer, ingclasses []string, ingressClusterIPFallback bool, serviceControllers []cache.SharedIndexInformer, kubeClient kubernetes.Interface) func([]string) (results []netip.Addr, raws []string) {
 	return func(indexKeys []string) (result []netip.Addr, raw []string) {
 		var objs []interface{}
 		for _, key := range indexKeys {
@@ -723,6 +729,12 @@ func lookupIngressIndex(ctrl cache.SharedIndexInformer, ingclasses []string) fun
 			}
 
 			result = append(result, fetchIngressLoadBalancerIPs(ingress.Status.LoadBalancer.Ingress)...)
+		}
+
+		if ingressClusterIPFallback && len(result) == 0 {
+			if clusterIP := discoverIngressControllerClusterIP(ingclasses, serviceControllers, kubeClient); clusterIP.IsValid() {
+				result = append(result, clusterIP)
+			}
 		}
 
 		return
@@ -807,6 +819,93 @@ func fetchIngressLoadBalancerIPs(ingresses []networking.IngressLoadBalancerIngre
 		}
 	}
 	return
+}
+
+// discoverIngressControllerClusterIP finds the ClusterIP of the service
+// that handles Ingress traffic. It reads the IngressClass labels to find
+// the controller, then looks for a LoadBalancer service with matching
+// app.kubernetes.io/name label. Prefers service.name=tcp (the TCP proxy
+// that carries Ingress LB IPs) over the main service. Returns invalid
+// Addr if discovery fails (callers treat as fail-open).
+//
+// Discovery runs once (guarded by sync.Once) and caches the result.
+func discoverIngressControllerClusterIP(ingClasses []string, serviceControllers []cache.SharedIndexInformer, kubeClient kubernetes.Interface) netip.Addr {
+	ingressClusterIPOnce.Do(func() {
+		// Find the IngressClass
+		ingressClasses, err := kubeClient.NetworkingV1().IngressClasses().List(context.Background(), metav1.ListOptions{})
+		if err != nil {
+			log.Warningf("ingressClusterIPFallback: failed to list IngressClasses: %v", err)
+			return
+		}
+		var targetIC *networking.IngressClass
+		for i := range ingressClasses.Items {
+			ic := &ingressClasses.Items[i]
+			if len(ingClasses) == 0 || slices.Contains(ingClasses, ic.Name) {
+				targetIC = ic
+				break
+			}
+		}
+		if targetIC == nil {
+			log.Warningf("ingressClusterIPFallback: no matching IngressClass found")
+			return
+		}
+
+		appName := targetIC.Labels["app.kubernetes.io/name"]
+		if appName == "" {
+			log.Warningf("ingressClusterIPFallback: IngressClass %s has no app.kubernetes.io/name label", targetIC.Name)
+			return
+		}
+
+		ns := targetIC.Annotations["meta.helm.sh/release-namespace"]
+		if ns == "" {
+			ns = "kube-system"
+		}
+
+		// Search service informers for a matching service
+		for _, ctrl := range serviceControllers {
+			for _, obj := range ctrl.GetIndexer().List() {
+				svc, ok := obj.(*core.Service)
+				if !ok || svc.Namespace != ns || svc.Spec.Type != core.ServiceTypeLoadBalancer {
+					continue
+				}
+				if svc.Labels["app.kubernetes.io/name"] != appName {
+					continue
+				}
+				// Prefer service.name=tcp (the TCP proxy carrying Ingress LB IPs)
+				if svc.Labels["service.name"] == "tcp" && svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
+					addr, err := netip.ParseAddr(svc.Spec.ClusterIP)
+					if err == nil {
+						ingressClusterIPCache = addr
+						log.Infof("ingressClusterIPFallback: discovered ClusterIP %s from service %s/%s (service.name=tcp)", addr, svc.Namespace, svc.Name)
+						return
+					}
+				}
+			}
+			// Fallback: any matching LB service (not metrics/dashboard)
+			for _, obj := range ctrl.GetIndexer().List() {
+				svc, ok := obj.(*core.Service)
+				if !ok || svc.Namespace != ns || svc.Spec.Type != core.ServiceTypeLoadBalancer {
+					continue
+				}
+				if svc.Labels["app.kubernetes.io/name"] != appName {
+					continue
+				}
+				if svc.Labels["service.name"] == "metrics" || svc.Labels["service.name"] == "dashboard" {
+					continue
+				}
+				if svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
+					addr, err := netip.ParseAddr(svc.Spec.ClusterIP)
+					if err == nil {
+						ingressClusterIPCache = addr
+						log.Infof("ingressClusterIPFallback: discovered ClusterIP %s from service %s/%s", addr, svc.Namespace, svc.Name)
+						return
+					}
+				}
+			}
+		}
+		log.Warningf("ingressClusterIPFallback: no matching service found for IngressClass %s (appName=%s, ns=%s)", targetIC.Name, appName, ns)
+	})
+	return ingressClusterIPCache
 }
 
 // the below is borrowed from k/k's GitHub repo

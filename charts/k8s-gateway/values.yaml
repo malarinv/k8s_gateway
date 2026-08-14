@@ -48,6 +48,12 @@ clientFiltering: false
 #   strict    = drop unknown candidates (VIPs, stale IPs)
 clientFilteringMode: ""
 
+# Auto-discover the ingress controller's ClusterIP and return it as a
+# fallback for Ingress-backed hostnames when no LoadBalancer IPs survive
+# client filtering (e.g. strict mode dropped them). Discovery uses
+# IngressClass labels to find the controller service. Default: false.
+ingressClusterIPFallback: false
+
 # Service name of a secondary DNS server (should be `serviceName.namespace`)
 secondary: ""
 

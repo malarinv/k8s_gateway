@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/coredns/coredns/plugin/test"
@@ -12,6 +13,7 @@ import (
 	core "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
@@ -860,3 +862,488 @@ func TestMultiSelectorServiceLookup(t *testing.T) {
 		}
 	})
 }
+
+func resetDiscoveryCache() {
+	ingressClusterIPOnce = sync.Once{}
+	ingressClusterIPCache = netip.Addr{}
+}
+
+// makeServiceInformer creates a fakeSharedIndexInformer pre-loaded with the given services.
+func makeServiceInformer(services ...*core.Service) *fakeSharedIndexInformer {
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
+	for _, svc := range services {
+		if err := indexer.Add(svc); err != nil {
+			panic(err)
+		}
+	}
+	return &fakeSharedIndexInformer{indexer: indexer}
+}
+
+func TestDiscoverIngressControllerClusterIP(t *testing.T) {
+	tests := []struct {
+		name            string
+		ingClasses      []string
+		ingressClass    *networking.IngressClass
+		services        []*core.Service
+		serviceCtrls    []*fakeSharedIndexInformer
+		expectedIP      netip.Addr
+	}{
+		{
+			name:       "tcp service preferred",
+			ingClasses: []string{},
+			ingressClass: &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "traefik",
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "traefik",
+					},
+					Annotations: map[string]string{
+						"meta.helm.sh/release-namespace": "kube-system",
+					},
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "traefik.io/ingress-controller",
+				},
+			},
+			services: []*core.Service{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "traefik-tcp",
+						Namespace: "kube-system",
+						Labels: map[string]string{
+							"app.kubernetes.io/name": "traefik",
+							"service.name":           "tcp",
+						},
+					},
+					Spec: core.ServiceSpec{
+						Type:      core.ServiceTypeLoadBalancer,
+						ClusterIP: "10.43.131.255",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "traefik",
+						Namespace: "kube-system",
+						Labels: map[string]string{
+							"app.kubernetes.io/name": "traefik",
+							"service.name":           "main",
+						},
+					},
+					Spec: core.ServiceSpec{
+						Type:      core.ServiceTypeLoadBalancer,
+						ClusterIP: "10.43.253.115",
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "traefik-metrics",
+						Namespace: "kube-system",
+						Labels: map[string]string{
+							"app.kubernetes.io/name": "traefik",
+							"service.name":           "metrics",
+						},
+					},
+					Spec: core.ServiceSpec{
+						Type:      core.ServiceTypeClusterIP,
+						ClusterIP: "10.43.229.6",
+					},
+				},
+			},
+			expectedIP: netip.MustParseAddr("10.43.131.255"),
+		},
+		{
+			name:       "fallback to non-tcp",
+			ingClasses: []string{},
+			ingressClass: &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "traefik",
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "traefik",
+					},
+					Annotations: map[string]string{
+						"meta.helm.sh/release-namespace": "kube-system",
+					},
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "traefik.io/ingress-controller",
+				},
+			},
+			services: []*core.Service{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "traefik",
+						Namespace: "kube-system",
+						Labels: map[string]string{
+							"app.kubernetes.io/name": "traefik",
+							"service.name":           "main",
+						},
+					},
+					Spec: core.ServiceSpec{
+						Type:      core.ServiceTypeLoadBalancer,
+						ClusterIP: "10.43.253.115",
+					},
+				},
+			},
+			expectedIP: netip.MustParseAddr("10.43.253.115"),
+		},
+		{
+			name:       "metrics excluded",
+			ingClasses: []string{},
+			ingressClass: &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "traefik",
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "traefik",
+					},
+					Annotations: map[string]string{
+						"meta.helm.sh/release-namespace": "kube-system",
+					},
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "traefik.io/ingress-controller",
+				},
+			},
+			services: []*core.Service{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "traefik-metrics",
+						Namespace: "kube-system",
+						Labels: map[string]string{
+							"app.kubernetes.io/name": "traefik",
+							"service.name":           "metrics",
+						},
+					},
+					Spec: core.ServiceSpec{
+						Type:      core.ServiceTypeLoadBalancer,
+						ClusterIP: "10.43.229.6",
+					},
+				},
+			},
+			expectedIP: netip.Addr{},
+		},
+		{
+			name:         "no matching IngressClass",
+			ingClasses:   []string{},
+			ingressClass: nil,
+			services:     []*core.Service{},
+			expectedIP:   netip.Addr{},
+		},
+		{
+			name:       "no matching service",
+			ingClasses: []string{},
+			ingressClass: &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "traefik",
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "traefik",
+					},
+					Annotations: map[string]string{
+						"meta.helm.sh/release-namespace": "kube-system",
+					},
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "traefik.io/ingress-controller",
+				},
+			},
+			services:   []*core.Service{},
+			expectedIP: netip.Addr{},
+		},
+		{
+			name:       "non-LB service skipped",
+			ingClasses: []string{},
+			ingressClass: &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "traefik",
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "traefik",
+					},
+					Annotations: map[string]string{
+						"meta.helm.sh/release-namespace": "kube-system",
+					},
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "traefik.io/ingress-controller",
+				},
+			},
+			services: []*core.Service{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "traefik-tcp",
+						Namespace: "kube-system",
+						Labels: map[string]string{
+							"app.kubernetes.io/name": "traefik",
+							"service.name":           "tcp",
+						},
+					},
+					Spec: core.ServiceSpec{
+						Type:      core.ServiceTypeClusterIP,
+						ClusterIP: "10.43.131.255",
+					},
+				},
+			},
+			expectedIP: netip.Addr{},
+		},
+		{
+			name:       "wrong namespace skipped",
+			ingClasses: []string{},
+			ingressClass: &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "traefik",
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "traefik",
+					},
+					Annotations: map[string]string{
+						"meta.helm.sh/release-namespace": "kube-system",
+					},
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "traefik.io/ingress-controller",
+				},
+			},
+			services: []*core.Service{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "traefik-tcp",
+						Namespace: "wrong-ns",
+						Labels: map[string]string{
+							"app.kubernetes.io/name": "traefik",
+							"service.name":           "tcp",
+						},
+					},
+					Spec: core.ServiceSpec{
+						Type:      core.ServiceTypeLoadBalancer,
+						ClusterIP: "10.43.131.255",
+					},
+				},
+			},
+			expectedIP: netip.Addr{},
+		},
+		{
+			name:       "IngressClass without app label",
+			ingClasses: []string{},
+			ingressClass: &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "traefik",
+					Annotations: map[string]string{
+						"meta.helm.sh/release-namespace": "kube-system",
+					},
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "traefik.io/ingress-controller",
+				},
+			},
+			services:   []*core.Service{},
+			expectedIP: netip.Addr{},
+		},
+		{
+			name:       "ingClasses filter",
+			ingClasses: []string{"nginx"},
+			ingressClass: &networking.IngressClass{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "traefik",
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "traefik",
+					},
+					Annotations: map[string]string{
+						"meta.helm.sh/release-namespace": "kube-system",
+					},
+				},
+				Spec: networking.IngressClassSpec{
+					Controller: "traefik.io/ingress-controller",
+				},
+			},
+			services: []*core.Service{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "traefik-tcp",
+						Namespace: "kube-system",
+						Labels: map[string]string{
+							"app.kubernetes.io/name": "traefik",
+							"service.name":           "tcp",
+						},
+					},
+					Spec: core.ServiceSpec{
+						Type:      core.ServiceTypeLoadBalancer,
+						ClusterIP: "10.43.131.255",
+					},
+				},
+			},
+			expectedIP: netip.Addr{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resetDiscoveryCache()
+
+			// Build fake clientset with IngressClass
+			var objs []runtime.Object
+			if tc.ingressClass != nil {
+				objs = append(objs, tc.ingressClass)
+			}
+			kubeClient := fake.NewSimpleClientset(objs...)
+
+			// Build service informers
+			var serviceControllers []cache.SharedIndexInformer
+			if len(tc.services) > 0 {
+				serviceControllers = append(serviceControllers, makeServiceInformer(tc.services...))
+			}
+
+			result := discoverIngressControllerClusterIP(tc.ingClasses, serviceControllers, kubeClient)
+
+			if tc.expectedIP.IsValid() {
+				if !result.IsValid() {
+					t.Fatalf("expected valid IP %s, got invalid", tc.expectedIP)
+				}
+				if result != tc.expectedIP {
+					t.Errorf("expected %s, got %s", tc.expectedIP, result)
+				}
+			} else {
+				if result.IsValid() {
+					t.Errorf("expected invalid (zero) IP, got %s", result)
+				}
+			}
+		})
+	}
+}
+
+func TestLookupIngressIndexClusterIPFallback(t *testing.T) {
+	// Set up IngressClass + service for discovery
+	resetDiscoveryCache()
+
+	ingressClass := &networking.IngressClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "traefik",
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "traefik",
+			},
+			Annotations: map[string]string{
+				"meta.helm.sh/release-namespace": "kube-system",
+			},
+		},
+		Spec: networking.IngressClassSpec{
+			Controller: "traefik.io/ingress-controller",
+		},
+	}
+	tcpService := &core.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "traefik-tcp",
+			Namespace: "kube-system",
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "traefik",
+				"service.name":           "tcp",
+			},
+		},
+		Spec: core.ServiceSpec{
+			Type:      core.ServiceTypeLoadBalancer,
+			ClusterIP: "10.43.131.255",
+		},
+	}
+
+	kubeClient := fake.NewSimpleClientset(ingressClass, tcpService)
+	serviceInformer := makeServiceInformer(tcpService)
+	serviceControllers := []cache.SharedIndexInformer{serviceInformer}
+
+	// Case A: LB IPs present — should return LB IP, not ClusterIP
+	t.Run("LB IPs present returns LB IP", func(t *testing.T) {
+		resetDiscoveryCache()
+		ingress := &networking.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "code-ingress",
+				Namespace: "flux-system",
+			},
+			Spec: networking.IngressSpec{
+				IngressClassName: strPtr("traefik"),
+				Rules: []networking.IngressRule{
+					{Host: "code.dev.whiteblossom.net"},
+				},
+			},
+			Status: networking.IngressStatus{
+				LoadBalancer: networking.IngressLoadBalancerStatus{
+					Ingress: []networking.IngressLoadBalancerIngress{
+						{IP: "172.28.77.43"},
+					},
+				},
+			},
+		}
+		indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{
+			ingressHostnameIndex: ingressHostnameIndexFunc,
+		})
+		if err := indexer.Add(ingress); err != nil {
+			t.Fatal(err)
+		}
+		ctrl := &fakeSharedIndexInformer{indexer: indexer}
+
+		lookup := lookupIngressIndex(ctrl, []string{}, true, serviceControllers, kubeClient)
+		results, _ := lookup([]string{"code.dev.whiteblossom.net"})
+
+		if len(results) != 1 || results[0] != netip.MustParseAddr("172.28.77.43") {
+			t.Errorf("expected [172.28.77.43], got %v", results)
+		}
+	})
+
+	// Case B: No LB IPs — should return discovered ClusterIP
+	t.Run("no LB IPs returns discovered ClusterIP", func(t *testing.T) {
+		resetDiscoveryCache()
+		ingress := &networking.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "code-ingress",
+				Namespace: "flux-system",
+			},
+			Spec: networking.IngressSpec{
+				IngressClassName: strPtr("traefik"),
+				Rules: []networking.IngressRule{
+					{Host: "code.dev.whiteblossom.net"},
+				},
+			},
+			// Empty status — no LB IPs
+		}
+		indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{
+			ingressHostnameIndex: ingressHostnameIndexFunc,
+		})
+		if err := indexer.Add(ingress); err != nil {
+			t.Fatal(err)
+		}
+		ctrl := &fakeSharedIndexInformer{indexer: indexer}
+
+		lookup := lookupIngressIndex(ctrl, []string{}, true, serviceControllers, kubeClient)
+		results, _ := lookup([]string{"code.dev.whiteblossom.net"})
+
+		if len(results) != 1 || results[0] != netip.MustParseAddr("10.43.131.255") {
+			t.Errorf("expected [10.43.131.255], got %v", results)
+		}
+	})
+
+	// Case C: Fallback disabled — should return empty
+	t.Run("fallback disabled returns empty", func(t *testing.T) {
+		resetDiscoveryCache()
+		ingress := &networking.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "code-ingress",
+				Namespace: "flux-system",
+			},
+			Spec: networking.IngressSpec{
+				IngressClassName: strPtr("traefik"),
+				Rules: []networking.IngressRule{
+					{Host: "code.dev.whiteblossom.net"},
+				},
+			},
+		}
+		indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{
+			ingressHostnameIndex: ingressHostnameIndexFunc,
+		})
+		if err := indexer.Add(ingress); err != nil {
+			t.Fatal(err)
+		}
+		ctrl := &fakeSharedIndexInformer{indexer: indexer}
+
+		lookup := lookupIngressIndex(ctrl, []string{}, false, serviceControllers, kubeClient)
+		results, _ := lookup([]string{"code.dev.whiteblossom.net"})
+
+		if len(results) != 0 {
+			t.Errorf("expected empty results, got %v", results)
+		}
+	})
+}
+
+func strPtr(s string) *string { return &s }

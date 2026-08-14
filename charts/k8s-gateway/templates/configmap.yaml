@@ -48,6 +48,9 @@ data:
           {{- if .Values.clientFilteringMode }}
           clientFilteringMode {{ .Values.clientFilteringMode }}
           {{- end }}
+          {{- if .Values.ingressClusterIPFallback }}
+          ingressClusterIPFallback true
+          {{- end }}
         }
         {{- range .Values.extraZonePlugins }}
         {{ .name }}{{ if .parameters }} {{ .parameters }}{{ end }}{{ if .configBlock }} { {{ .configBlock | nindent 10 }}

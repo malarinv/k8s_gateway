@@ -57,8 +57,9 @@ type Gateway struct {
 	configContext       string
 	nodeAddressType     string
 	clientFiltering     bool
-	clientFilteringMode string
-	nodeInterfaceLookup nodeSubnetLookupFunc
+	clientFilteringMode      string
+	ingressClusterIPFallback bool
+	nodeInterfaceLookup      nodeSubnetLookupFunc
 	ExternalAddrFunc    func(request.Request) []dns.RR
 	resourceFilters     ResourceFilters
 
