@@ -837,73 +837,72 @@ func discoverIngressControllerClusterIP(ingClasses []string, serviceControllers 
 			log.Warningf("ingressClusterIPFallback: failed to list IngressClasses: %v", err)
 			return
 		}
-		var targetIC *networking.IngressClass
+		// Iterate all IngressClasses — don't stop at the first match.
+		// Some IngressClasses (e.g. cloudflare-tunnel) lack the
+		// app.kubernetes.io/name label needed for discovery. Skip those
+		// and try the next one; only fail after exhausting all candidates.
 		for i := range ingressClasses.Items {
 			ic := &ingressClasses.Items[i]
-			if len(ingClasses) == 0 || slices.Contains(ingClasses, ic.Name) {
-				targetIC = ic
-				break
+			if len(ingClasses) > 0 && !slices.Contains(ingClasses, ic.Name) {
+				continue
 			}
-		}
-		if targetIC == nil {
-			log.Warningf("ingressClusterIPFallback: no matching IngressClass found")
-			return
-		}
 
-		appName := targetIC.Labels["app.kubernetes.io/name"]
-		if appName == "" {
-			log.Warningf("ingressClusterIPFallback: IngressClass %s has no app.kubernetes.io/name label", targetIC.Name)
-			return
-		}
+			appName := ic.Labels["app.kubernetes.io/name"]
+			if appName == "" {
+				log.Debugf("ingressClusterIPFallback: IngressClass %s has no app.kubernetes.io/name label, skipping", ic.Name)
+				continue
+			}
 
-		ns := targetIC.Annotations["meta.helm.sh/release-namespace"]
-		if ns == "" {
-			ns = "kube-system"
-		}
+			ns := ic.Annotations["meta.helm.sh/release-namespace"]
+			if ns == "" {
+				ns = "kube-system"
+			}
 
-		// Search service informers for a matching service
-		for _, ctrl := range serviceControllers {
-			for _, obj := range ctrl.GetIndexer().List() {
-				svc, ok := obj.(*core.Service)
-				if !ok || svc.Namespace != ns || svc.Spec.Type != core.ServiceTypeLoadBalancer {
-					continue
+			// Search service informers for a matching service
+			for _, ctrl := range serviceControllers {
+				for _, obj := range ctrl.GetIndexer().List() {
+					svc, ok := obj.(*core.Service)
+					if !ok || svc.Namespace != ns || svc.Spec.Type != core.ServiceTypeLoadBalancer {
+						continue
+					}
+					if svc.Labels["app.kubernetes.io/name"] != appName {
+						continue
+					}
+					// Prefer service.name=tcp (the TCP proxy carrying Ingress LB IPs)
+					if svc.Labels["service.name"] == "tcp" && svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
+						addr, err := netip.ParseAddr(svc.Spec.ClusterIP)
+						if err == nil {
+							ingressClusterIPCache = addr
+							log.Infof("ingressClusterIPFallback: discovered ClusterIP %s from service %s/%s via IngressClass %s (service.name=tcp)", addr, svc.Namespace, svc.Name, ic.Name)
+							return
+						}
+					}
 				}
-				if svc.Labels["app.kubernetes.io/name"] != appName {
-					continue
-				}
-				// Prefer service.name=tcp (the TCP proxy carrying Ingress LB IPs)
-				if svc.Labels["service.name"] == "tcp" && svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
-					addr, err := netip.ParseAddr(svc.Spec.ClusterIP)
-					if err == nil {
-						ingressClusterIPCache = addr
-						log.Infof("ingressClusterIPFallback: discovered ClusterIP %s from service %s/%s (service.name=tcp)", addr, svc.Namespace, svc.Name)
-						return
+				// Fallback: any matching LB service (not metrics/dashboard)
+				for _, obj := range ctrl.GetIndexer().List() {
+					svc, ok := obj.(*core.Service)
+					if !ok || svc.Namespace != ns || svc.Spec.Type != core.ServiceTypeLoadBalancer {
+						continue
+					}
+					if svc.Labels["app.kubernetes.io/name"] != appName {
+						continue
+					}
+					if svc.Labels["service.name"] == "metrics" || svc.Labels["service.name"] == "dashboard" {
+						continue
+					}
+					if svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
+						addr, err := netip.ParseAddr(svc.Spec.ClusterIP)
+						if err == nil {
+							ingressClusterIPCache = addr
+							log.Infof("ingressClusterIPFallback: discovered ClusterIP %s from service %s/%s via IngressClass %s", addr, svc.Namespace, svc.Name, ic.Name)
+							return
+						}
 					}
 				}
 			}
-			// Fallback: any matching LB service (not metrics/dashboard)
-			for _, obj := range ctrl.GetIndexer().List() {
-				svc, ok := obj.(*core.Service)
-				if !ok || svc.Namespace != ns || svc.Spec.Type != core.ServiceTypeLoadBalancer {
-					continue
-				}
-				if svc.Labels["app.kubernetes.io/name"] != appName {
-					continue
-				}
-				if svc.Labels["service.name"] == "metrics" || svc.Labels["service.name"] == "dashboard" {
-					continue
-				}
-				if svc.Spec.ClusterIP != "" && svc.Spec.ClusterIP != "None" {
-					addr, err := netip.ParseAddr(svc.Spec.ClusterIP)
-					if err == nil {
-						ingressClusterIPCache = addr
-						log.Infof("ingressClusterIPFallback: discovered ClusterIP %s from service %s/%s", addr, svc.Namespace, svc.Name)
-						return
-					}
-				}
-			}
+			log.Debugf("ingressClusterIPFallback: no matching service found for IngressClass %s (appName=%s, ns=%s), trying next", ic.Name, appName, ns)
 		}
-		log.Warningf("ingressClusterIPFallback: no matching service found for IngressClass %s (appName=%s, ns=%s)", targetIC.Name, appName, ns)
+		log.Warningf("ingressClusterIPFallback: no usable IngressClass found (checked %d, filtered %d)", len(ingressClasses.Items), len(ingClasses))
 	})
 	return ingressClusterIPCache
 }
