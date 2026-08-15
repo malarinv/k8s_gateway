@@ -189,7 +189,15 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	// set. If filtering removes every address, the fall-through check below
 	// treats it as a no-match exactly like an unmatched hostname.
 	if gw.clientFiltering {
-		addrs = filterAddressesByClientSubnet(state.Req, addrs, gw.nodeInterfaceLookup, gw.clientFilteringMode)
+		// Extract source IP as fallback for when no ECS is present
+		// (e.g. vcluster CoreDNS forwards without ECS).
+		var fallbackClientIP netip.Addr
+		if srcIP, _, err := net.SplitHostPort(w.RemoteAddr().String()); err == nil {
+			if src, err := netip.ParseAddr(srcIP); err == nil {
+				fallbackClientIP = src
+			}
+		}
+		addrs = filterAddressesByClientSubnet(state.Req, addrs, gw.nodeInterfaceLookup, gw.clientFilteringMode, fallbackClientIP)
 		log.Debugf("filtered response addresses %v", addrs)
 	}
 

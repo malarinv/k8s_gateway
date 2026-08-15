@@ -31,14 +31,19 @@ type nodeSubnetLookupFunc func(netip.Addr) *net.IPNet
 // forward ipv4Mask:32 the full client IP is carried as the ECS address, and
 // the filter's job is to compare that client IP against the *real* interface
 // subnet of the node hosting each candidate.
-func filterAddressesByClientSubnet(req *dns.Msg, addrs []netip.Addr, lookup nodeSubnetLookupFunc, mode string) []netip.Addr {
+func filterAddressesByClientSubnet(req *dns.Msg, addrs []netip.Addr, lookup nodeSubnetLookupFunc, mode string, fallbackClientIP netip.Addr) []netip.Addr {
 	if len(addrs) == 0 {
 		return addrs
 	}
 	clientIP := extractClientIP(req)
 	if !clientIP.IsValid() {
-		// No ECS option (or malformed) → fail-open.
-		return addrs
+		// No ECS option (or malformed) → use fallback source IP
+		// if available, otherwise fail-open.
+		if fallbackClientIP.IsValid() {
+			clientIP = fallbackClientIP
+		} else {
+			return addrs
+		}
 	}
 	kept := make([]netip.Addr, 0, len(addrs))
 	for _, addr := range addrs {

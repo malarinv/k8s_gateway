@@ -180,7 +180,7 @@ func TestFilterAddressesByClientSubnet(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := filterAddressesByClientSubnet(tc.req, tc.in, tc.lookup, "failOpen")
+			got := filterAddressesByClientSubnet(tc.req, tc.in, tc.lookup, "failOpen", netip.Addr{})
 			gotStrs := addrsToStrings(got)
 			if len(gotStrs) != len(tc.want) {
 				t.Fatalf("len mismatch: got %d (%v), want %d (%v)", len(gotStrs), gotStrs, len(tc.want), tc.want)
@@ -256,7 +256,7 @@ func TestFilterAddressesByClientSubnetStrictMode(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := filterAddressesByClientSubnet(tc.req, tc.in, tc.lookup, "strict")
+			got := filterAddressesByClientSubnet(tc.req, tc.in, tc.lookup, "strict", netip.Addr{})
 			gotStrs := addrsToStrings(got)
 			if len(gotStrs) != len(tc.want) {
 				t.Fatalf("len mismatch: got %d (%v), want %d (%v)", len(gotStrs), gotStrs, len(tc.want), tc.want)
