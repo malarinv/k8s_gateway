@@ -11,6 +11,8 @@ import (
 	"github.com/coredns/coredns/plugin/pkg/fall"
 	"github.com/coredns/coredns/request"
 	"github.com/miekg/dns"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/kubernetes"
 )
 
 type lookupFunc func(indexKeys []string) (results []netip.Addr, raws []string)
@@ -60,6 +62,8 @@ type Gateway struct {
 	clientFilteringMode      string
 	ingressClusterIPFallback bool
 	nodeInterfaceLookup      nodeSubnetLookupFunc
+	serviceControllers       []cache.SharedIndexInformer
+	kubeClient               kubernetes.Interface
 	ExternalAddrFunc    func(request.Request) []dns.RR
 	resourceFilters     ResourceFilters
 
@@ -187,6 +191,18 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	if gw.clientFiltering {
 		addrs = filterAddressesByClientSubnet(state.Req, addrs, gw.nodeInterfaceLookup, gw.clientFilteringMode)
 		log.Debugf("filtered response addresses %v", addrs)
+	}
+
+	// ingressClusterIPFallback: when client filtering stripped all
+	// LoadBalancer IPs (strict mode), fall back to the ingress
+	// controller's ClusterIP. This runs AFTER filtering so the
+	// fallback only triggers when internal clients truly can't reach
+	// the LB IPs.
+	if gw.ingressClusterIPFallback && len(addrs) == 0 && len(raws) == 0 {
+		if clusterIP := discoverIngressControllerClusterIP(gw.resourceFilters.ingressClasses, gw.serviceControllers, gw.kubeClient); clusterIP.IsValid() {
+			addrs = append(addrs, clusterIP)
+			log.Debugf("ingressClusterIPFallback: using ClusterIP %v", clusterIP)
+		}
 	}
 
 	// Fall through if no host matches (or if client-filtering emptied the set)

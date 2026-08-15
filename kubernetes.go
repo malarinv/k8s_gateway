@@ -136,7 +136,7 @@ func newKubeController(ctx context.Context, c *kubernetes.Clientset, gw *gateway
 						defaultResyncPeriod,
 						cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc},
 					)
-					resource.lookup = lookupIngressIndex(ingressController, originalGateway.resourceFilters.ingressClasses, originalGateway.ingressClusterIPFallback, serviceControllers, ctrl.client)
+					resource.lookup = lookupIngressIndex(ingressController, originalGateway.resourceFilters.ingressClasses)
 					ctrl.controllers = append(ctrl.controllers, ingressController)
 					log.Infof("Ingress controller initialized")
 
@@ -188,6 +188,11 @@ func newKubeController(ctx context.Context, c *kubernetes.Clientset, gw *gateway
 			log.Infof("Node controller initialized")
 		}
 	}
+
+	// Wire service controllers and kube client into Gateway for
+	// ingressClusterIPFallback (used after client filtering in ServeDNS).
+	originalGateway.serviceControllers = serviceControllers
+	originalGateway.kubeClient = ctrl.client
 
 	return ctrl
 }
@@ -712,7 +717,7 @@ func lookupGateways(gw cache.SharedIndexInformer, refs []gatewayapi_v1.ParentRef
 	return
 }
 
-func lookupIngressIndex(ctrl cache.SharedIndexInformer, ingclasses []string, ingressClusterIPFallback bool, serviceControllers []cache.SharedIndexInformer, kubeClient kubernetes.Interface) func([]string) (results []netip.Addr, raws []string) {
+func lookupIngressIndex(ctrl cache.SharedIndexInformer, ingclasses []string) func([]string) (results []netip.Addr, raws []string) {
 	return func(indexKeys []string) (result []netip.Addr, raw []string) {
 		var objs []interface{}
 		for _, key := range indexKeys {
@@ -729,12 +734,6 @@ func lookupIngressIndex(ctrl cache.SharedIndexInformer, ingclasses []string, ing
 			}
 
 			result = append(result, fetchIngressLoadBalancerIPs(ingress.Status.LoadBalancer.Ingress)...)
-		}
-
-		if ingressClusterIPFallback && len(result) == 0 {
-			if clusterIP := discoverIngressControllerClusterIP(ingclasses, serviceControllers, kubeClient); clusterIP.IsValid() {
-				result = append(result, clusterIP)
-			}
 		}
 
 		return

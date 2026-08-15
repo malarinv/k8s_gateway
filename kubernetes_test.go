@@ -1241,8 +1241,11 @@ func TestLookupIngressIndexClusterIPFallback(t *testing.T) {
 	}
 
 	kubeClient := fake.NewSimpleClientset(ingressClass, tcpService)
+	_ = kubeClient // used only by discovery, now tested at ServeDNS level
+
 	serviceInformer := makeServiceInformer(tcpService)
 	serviceControllers := []cache.SharedIndexInformer{serviceInformer}
+	_ = serviceControllers // used only by discovery, now tested at ServeDNS level
 
 	// Case A: LB IPs present — should return LB IP, not ClusterIP
 	t.Run("LB IPs present returns LB IP", func(t *testing.T) {
@@ -1274,7 +1277,7 @@ func TestLookupIngressIndexClusterIPFallback(t *testing.T) {
 		}
 		ctrl := &fakeSharedIndexInformer{indexer: indexer}
 
-		lookup := lookupIngressIndex(ctrl, []string{}, true, serviceControllers, kubeClient)
+		lookup := lookupIngressIndex(ctrl, []string{})
 		results, _ := lookup([]string{"code.dev.whiteblossom.net"})
 
 		if len(results) != 1 || results[0] != netip.MustParseAddr("172.28.77.43") {
@@ -1282,8 +1285,9 @@ func TestLookupIngressIndexClusterIPFallback(t *testing.T) {
 		}
 	})
 
-	// Case B: No LB IPs — should return discovered ClusterIP
-	t.Run("no LB IPs returns discovered ClusterIP", func(t *testing.T) {
+	// Case B: No LB IPs — lookupIngressIndex returns empty (fallback
+	// now lives in gateway.go ServeDNS, after client filtering)
+	t.Run("no LB IPs returns empty", func(t *testing.T) {
 		resetDiscoveryCache()
 		ingress := &networking.Ingress{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1306,11 +1310,11 @@ func TestLookupIngressIndexClusterIPFallback(t *testing.T) {
 		}
 		ctrl := &fakeSharedIndexInformer{indexer: indexer}
 
-		lookup := lookupIngressIndex(ctrl, []string{}, true, serviceControllers, kubeClient)
+		lookup := lookupIngressIndex(ctrl, []string{})
 		results, _ := lookup([]string{"code.dev.whiteblossom.net"})
 
-		if len(results) != 1 || results[0] != netip.MustParseAddr("10.43.131.255") {
-			t.Errorf("expected [10.43.131.255], got %v", results)
+		if len(results) != 0 {
+			t.Errorf("expected empty (fallback is now in ServeDNS), got %v", results)
 		}
 	})
 
@@ -1337,7 +1341,7 @@ func TestLookupIngressIndexClusterIPFallback(t *testing.T) {
 		}
 		ctrl := &fakeSharedIndexInformer{indexer: indexer}
 
-		lookup := lookupIngressIndex(ctrl, []string{}, false, serviceControllers, kubeClient)
+		lookup := lookupIngressIndex(ctrl, []string{})
 		results, _ := lookup([]string{"code.dev.whiteblossom.net"})
 
 		if len(results) != 0 {
