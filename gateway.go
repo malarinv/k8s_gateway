@@ -198,10 +198,28 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	// controller's ClusterIP. This runs AFTER filtering so the
 	// fallback only triggers when internal clients truly can't reach
 	// the LB IPs.
-	if gw.ingressClusterIPFallback && len(addrs) == 0 && len(raws) == 0 {
-		if clusterIP := discoverIngressControllerClusterIP(gw.resourceFilters.ingressClasses, gw.serviceControllers, gw.kubeClient); clusterIP.IsValid() {
-			addrs = append(addrs, clusterIP)
-			log.Debugf("ingressClusterIPFallback: using ClusterIP %v", clusterIP)
+	// ingressClusterIPFallback: append the ingress controller's ClusterIP
+	// for cluster-internal clients (private/source IPs) that can't reach
+	// LoadBalancer external IPs. When client filtering stripped all LB
+	// IPs (strict mode with ECS), the ClusterIP is the only answer.
+	// When there's no ECS (e.g. vcluster CoreDNS bypasses blocky),
+	// the LB IPs survive filtering but are unreachable — the ClusterIP
+	// gives internal clients a reachable answer.
+	if gw.ingressClusterIPFallback {
+		srcIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
+		src, err := netip.ParseAddr(srcIP)
+		if err == nil && src.IsPrivate() {
+			if clusterIP := discoverIngressControllerClusterIP(gw.resourceFilters.ingressClasses, gw.serviceControllers, gw.kubeClient); clusterIP.IsValid() {
+				addrs = append(addrs, clusterIP)
+				log.Debugf("ingressClusterIPFallback: appended ClusterIP %v for internal client %v", clusterIP, src)
+			}
+		} else if len(addrs) == 0 {
+			// Fallback: even without private IP check, if all LB IPs
+			// were filtered (strict mode + ECS), use ClusterIP.
+			if clusterIP := discoverIngressControllerClusterIP(gw.resourceFilters.ingressClasses, gw.serviceControllers, gw.kubeClient); clusterIP.IsValid() {
+				addrs = append(addrs, clusterIP)
+				log.Debugf("ingressClusterIPFallback: using ClusterIP %v (all LB IPs filtered)", clusterIP)
+			}
 		}
 	}
 
