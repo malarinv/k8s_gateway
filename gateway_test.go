@@ -13,6 +13,9 @@ import (
 	"github.com/coredns/coredns/plugin/test"
 
 	"github.com/miekg/dns"
+	networking "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 type FallthroughCase struct {
@@ -393,5 +396,114 @@ func TestUpdateResourcesUnknown(t *testing.T) {
 	}
 	if gw.Resources[0].name != "Ingress" {
 		t.Errorf("expected Ingress, got %s", gw.Resources[0].name)
+	}
+}
+
+// TestAnyIngressForHostname verifies that anyIngressForHostname returns true
+// when an ingress exists for the hostname (regardless of class) and false
+// when no ingress exists.
+func TestAnyIngressForHostname(t *testing.T) {
+	gw := newGateway()
+	gw.Zones = []string{"whiteblossom.net."}
+	gw.Next = test.NextHandler(dns.RcodeSuccess, nil)
+	gw.ExternalAddrFunc = gw.SelfAddress
+	gw.Controller = &KubeController{hasSynced: true}
+
+	// Create a cloudflare-tunnel ingress for code-dev.whiteblossom.net
+	ingressClass := "cloudflare-tunnel"
+	ingress := &networking.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "code-dev-tunnel",
+			Namespace: "default",
+		},
+		Spec: networking.IngressSpec{
+			IngressClassName: &ingressClass,
+			Rules: []networking.IngressRule{
+				{
+					Host: "code-dev.whiteblossom.net",
+				},
+			},
+		},
+	}
+
+	// Create an indexer and add the ingress to it
+	ingressIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc})
+	ingressIndexer.Add(ingress)
+
+	// Store the indexer on the Gateway's Ingress resource
+	resource := gw.lookupResource("Ingress")
+	if resource == nil {
+		t.Fatal("Ingress resource not found in Gateway")
+	}
+	resource.controller = ingressIndexer
+
+	// Test: hostname with existing ingress should return true
+	if !gw.anyIngressForHostname("code-dev.whiteblossom.net") {
+		t.Error("expected anyIngressForHostname to return true for code-dev.whiteblossom.net")
+	}
+
+	// Test: hostname without ingress should return false
+	if gw.anyIngressForHostname("nonexistent.whiteblossom.net") {
+		t.Error("expected anyIngressForHostname to return false for nonexistent.whiteblossom.net")
+	}
+}
+
+// TestServeDNSCloudflareTunnelFallthrough verifies that when a hostname has
+// an ingress with a non-matching class (e.g. cloudflare-tunnel), the
+// ingressClusterIPFallback does NOT inject Traefik ClusterIP, allowing
+// the query to fall through to the next CoreDNS plugin.
+func TestServeDNSCloudflareTunnelFallthrough(t *testing.T) {
+	ctrl := &KubeController{hasSynced: true}
+	gw := newGateway()
+	gw.Zones = []string{"whiteblossom.net."}
+	gw.Next = test.NextHandler(dns.RcodeSuccess, Fallen{})
+	gw.ExternalAddrFunc = gw.SelfAddress
+	gw.Controller = ctrl
+	gw.ingressClusterIPFallback = true
+	gw.resourceFilters.ingressClasses = []string{"traefik"}
+	gw.Fall = fall.F{Zones: []string{"."}}
+
+	// Create a cloudflare-tunnel ingress for code-dev.whiteblossom.net
+	ingressClass := "cloudflare-tunnel"
+	ingress := &networking.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "code-dev-tunnel",
+			Namespace: "default",
+		},
+		Spec: networking.IngressSpec{
+			IngressClassName: &ingressClass,
+			Rules: []networking.IngressRule{
+				{
+					Host: "code-dev.whiteblossom.net",
+				},
+			},
+		},
+	}
+
+	// Create an indexer and add the ingress to it
+	ingressIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc})
+	ingressIndexer.Add(ingress)
+
+	// Store the indexer on the Gateway's Ingress resource
+	resource := gw.lookupResource("Ingress")
+	if resource == nil {
+		t.Fatal("Ingress resource not found in Gateway")
+	}
+	resource.controller = ingressIndexer
+
+	// Query from a private IP (simulating cluster-internal client)
+	ctx := context.TODO()
+	r := new(dns.Msg)
+	r.SetQuestion("code-dev.whiteblossom.net.", dns.TypeA)
+	w := dnstest.NewRecorder(&test.ResponseWriter{
+		RemoteIP: "10.0.0.1",
+	})
+
+	_, err := gw.ServeDNS(ctx, w, r)
+
+	// Should fall through (return Fallen error) because cloudflare-tunnel
+	// ingress exists but doesn't match traefik class
+	if !errors.As(err, &Fallen{}) {
+		t.Errorf("expected fall-through for cloudflare-tunnel domain, got err=%v, rcode=%d", err, w.Msg.Rcode)
 	}
 }

@@ -18,8 +18,9 @@ import (
 type lookupFunc func(indexKeys []string) (results []netip.Addr, raws []string)
 
 type resourceWithIndex struct {
-	name   string
-	lookup lookupFunc
+	name       string
+	lookup     lookupFunc
+	controller cache.Indexer // optional; used for class-agnostic existence checks
 }
 
 // Static resources with their default noop function
@@ -105,6 +106,22 @@ func (gw *Gateway) lookupResource(resource string) *resourceWithIndex {
 		}
 	}
 	return nil
+}
+
+// anyIngressForHostname returns true if ANY ingress exists for the given
+// hostname, regardless of ingress class. Used to prevent ingressClusterIPFallback
+// from injecting Traefik ClusterIP for domains managed by other controllers
+// (e.g. cloudflare-tunnel).
+func (gw *Gateway) anyIngressForHostname(hostname string) bool {
+	resource := gw.lookupResource("Ingress")
+	if resource == nil || resource.controller == nil {
+		return false
+	}
+	objs, err := resource.controller.ByIndex(ingressHostnameIndex, strings.ToLower(stripClosingDot(hostname)))
+	if err != nil || len(objs) == 0 {
+		return false
+	}
+	return true
 }
 
 // Update resources in the Gateway based on provided configuration
@@ -213,7 +230,7 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	// When there's no ECS (e.g. vcluster CoreDNS bypasses blocky),
 	// the LB IPs survive filtering but are unreachable — the ClusterIP
 	// gives internal clients a reachable answer.
-	if gw.ingressClusterIPFallback {
+	if gw.ingressClusterIPFallback && !gw.anyIngressForHostname(qname) {
 		srcIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
 		src, err := netip.ParseAddr(srcIP)
 		if err == nil && src.IsPrivate() {

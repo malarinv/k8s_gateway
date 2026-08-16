@@ -137,6 +137,7 @@ func newKubeController(ctx context.Context, c *kubernetes.Clientset, gw *gateway
 						cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc},
 					)
 					resource.lookup = lookupIngressIndex(ingressController, originalGateway.resourceFilters.ingressClasses)
+					resource.controller = ingressController.GetIndexer()
 					ctrl.controllers = append(ctrl.controllers, ingressController)
 					log.Infof("Ingress controller initialized")
 
