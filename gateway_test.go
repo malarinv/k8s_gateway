@@ -428,7 +428,9 @@ func TestAnyIngressForHostname(t *testing.T) {
 
 	// Create an indexer and add the ingress to it
 	ingressIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc})
-	ingressIndexer.Add(ingress)
+	if err := ingressIndexer.Add(ingress); err != nil {
+		t.Fatalf("failed to add ingress to indexer: %v", err)
+	}
 
 	// Store the indexer on the Gateway's Ingress resource
 	resource := gw.lookupResource("Ingress")
@@ -482,7 +484,9 @@ func TestServeDNSCloudflareTunnelFallthrough(t *testing.T) {
 
 	// Create an indexer and add the ingress to it
 	ingressIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc})
-	ingressIndexer.Add(ingress)
+	if err := ingressIndexer.Add(ingress); err != nil {
+		t.Fatalf("failed to add ingress to indexer: %v", err)
+	}
 
 	// Store the indexer on the Gateway's Ingress resource
 	resource := gw.lookupResource("Ingress")
