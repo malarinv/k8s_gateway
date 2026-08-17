@@ -399,10 +399,10 @@ func TestUpdateResourcesUnknown(t *testing.T) {
 	}
 }
 
-// TestAnyIngressForHostname verifies that anyIngressForHostname returns true
+// TestAnyNonMatchingIngressForHostname verifies that anyNonMatchingIngressForHostname returns true
 // when an ingress exists for the hostname (regardless of class) and false
 // when no ingress exists.
-func TestAnyIngressForHostname(t *testing.T) {
+func TestAnyNonMatchingIngressForHostname(t *testing.T) {
 	gw := newGateway()
 	gw.Zones = []string{"whiteblossom.net."}
 	gw.Next = test.NextHandler(dns.RcodeSuccess, nil)
@@ -440,13 +440,13 @@ func TestAnyIngressForHostname(t *testing.T) {
 	resource.controller = ingressIndexer
 
 	// Test: hostname with existing ingress should return true
-	if !gw.anyIngressForHostname("code-dev.whiteblossom.net") {
-		t.Error("expected anyIngressForHostname to return true for code-dev.whiteblossom.net")
+	if !gw.anyNonMatchingIngressForHostname("code-dev.whiteblossom.net") {
+		t.Error("expected anyNonMatchingIngressForHostname to return true for code-dev.whiteblossom.net")
 	}
 
 	// Test: hostname without ingress should return false
-	if gw.anyIngressForHostname("nonexistent.whiteblossom.net") {
-		t.Error("expected anyIngressForHostname to return false for nonexistent.whiteblossom.net")
+	if gw.anyNonMatchingIngressForHostname("nonexistent.whiteblossom.net") {
+		t.Error("expected anyNonMatchingIngressForHostname to return false for nonexistent.whiteblossom.net")
 	}
 }
 

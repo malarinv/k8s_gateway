@@ -13,6 +13,8 @@ import (
 	"github.com/miekg/dns"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/kubernetes"
+	networking "k8s.io/api/networking/v1"
+	"slices"
 )
 
 type lookupFunc func(indexKeys []string) (results []netip.Addr, raws []string)
@@ -108,11 +110,13 @@ func (gw *Gateway) lookupResource(resource string) *resourceWithIndex {
 	return nil
 }
 
-// anyIngressForHostname returns true if ANY ingress exists for the given
-// hostname, regardless of ingress class. Used to prevent ingressClusterIPFallback
-// from injecting Traefik ClusterIP for domains managed by other controllers
-// (e.g. cloudflare-tunnel).
-func (gw *Gateway) anyIngressForHostname(hostname string) bool {
+// anyNonMatchingIngressForHostname returns true if an ingress exists for the
+// given hostname with a class NOT in the configured ingressClasses list. This
+// prevents ingressClusterIPFallback from injecting Traefik ClusterIP for
+// domains managed by other controllers (e.g. cloudflare-tunnel). If all
+// ingresses for the hostname match the configured classes (traefik), returns
+// false — allowing the ClusterIP fallback to work.
+func (gw *Gateway) anyNonMatchingIngressForHostname(hostname string) bool {
 	resource := gw.lookupResource("Ingress")
 	if resource == nil || resource.controller == nil {
 		return false
@@ -121,7 +125,23 @@ func (gw *Gateway) anyIngressForHostname(hostname string) bool {
 	if err != nil || len(objs) == 0 {
 		return false
 	}
-	return true
+	for _, obj := range objs {
+		ingress, ok := obj.(*networking.Ingress)
+		if !ok {
+			continue
+		}
+		// If ingress has no class, treat as non-matching (conservative)
+		if ingress.Spec.IngressClassName == nil {
+			return true
+		}
+		// If this ingress class is NOT in the configured list, it's managed
+		// by a different controller — block the fallback
+		if !slices.Contains(gw.resourceFilters.ingressClasses, *ingress.Spec.IngressClassName) {
+			return true
+		}
+	}
+	// All ingresses for this hostname match configured classes (traefik)
+	return false
 }
 
 // Update resources in the Gateway based on provided configuration
@@ -230,7 +250,7 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	// When there's no ECS (e.g. vcluster CoreDNS bypasses blocky),
 	// the LB IPs survive filtering but are unreachable — the ClusterIP
 	// gives internal clients a reachable answer.
-	if gw.ingressClusterIPFallback && !gw.anyIngressForHostname(qname) {
+	if gw.ingressClusterIPFallback && !gw.anyNonMatchingIngressForHostname(qname) {
 		srcIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
 		src, err := netip.ParseAddr(srcIP)
 		if err == nil && src.IsPrivate() {
