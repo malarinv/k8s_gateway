@@ -450,6 +450,92 @@ func TestAnyNonMatchingIngressForHostname(t *testing.T) {
 	}
 }
 
+// TestAnyNonMatchingIngressForHostnameAnnotationFallback verifies that when
+// an ingress has no spec.ingressClassName, the function falls back to the
+// deprecated kubernetes.io/ingress.class annotation.
+func TestAnyNonMatchingIngressForHostnameAnnotationFallback(t *testing.T) {
+	gw := newGateway()
+	gw.Zones = []string{"whiteblossom.net."}
+	gw.Next = test.NextHandler(dns.RcodeSuccess, nil)
+	gw.ExternalAddrFunc = gw.SelfAddress
+	gw.Controller = &KubeController{hasSynced: true}
+	gw.resourceFilters.ingressClasses = []string{"traefik"}
+
+	// Helper to create a gateway with a given ingress
+	setupIngress := func(t *testing.T, ingress *networking.Ingress) {
+		t.Helper()
+		ingressIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc})
+		if err := ingressIndexer.Add(ingress); err != nil {
+			t.Fatalf("failed to add ingress to indexer: %v", err)
+		}
+		resource := gw.lookupResource("Ingress")
+		if resource == nil {
+			t.Fatal("Ingress resource not found in Gateway")
+		}
+		resource.controller = ingressIndexer
+	}
+
+	t.Run("no class and no annotation blocks fallback", func(t *testing.T) {
+		ingress := &networking.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "no-class-ingress",
+				Namespace: "default",
+			},
+			Spec: networking.IngressSpec{
+				Rules: []networking.IngressRule{
+					{Host: "test.whiteblossom.net"},
+				},
+			},
+		}
+		setupIngress(t, ingress)
+		if !gw.anyNonMatchingIngressForHostname("test.whiteblossom.net") {
+			t.Error("expected true when ingress has no class and no annotation")
+		}
+	})
+
+	t.Run("traefik annotation allows fallback", func(t *testing.T) {
+		ingress := &networking.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "traefik-annotated-ingress",
+				Namespace: "default",
+				Annotations: map[string]string{
+					"kubernetes.io/ingress.class": "traefik",
+				},
+			},
+			Spec: networking.IngressSpec{
+				Rules: []networking.IngressRule{
+					{Host: "annotated.whiteblossom.net"},
+				},
+			},
+		}
+		setupIngress(t, ingress)
+		if gw.anyNonMatchingIngressForHostname("annotated.whiteblossom.net") {
+			t.Error("expected false when ingress has traefik annotation (matches configured class)")
+		}
+	})
+
+	t.Run("cloudflare-tunnel annotation blocks fallback", func(t *testing.T) {
+		ingress := &networking.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "tunnel-annotated-ingress",
+				Namespace: "default",
+				Annotations: map[string]string{
+					"kubernetes.io/ingress.class": "cloudflare-tunnel",
+				},
+			},
+			Spec: networking.IngressSpec{
+				Rules: []networking.IngressRule{
+					{Host: "tunnel.whiteblossom.net"},
+				},
+			},
+		}
+		setupIngress(t, ingress)
+		if !gw.anyNonMatchingIngressForHostname("tunnel.whiteblossom.net") {
+			t.Error("expected true when ingress has cloudflare-tunnel annotation (doesn't match configured class)")
+		}
+	})
+}
+
 // TestServeDNSCloudflareTunnelFallthrough verifies that when a hostname has
 // an ingress with a non-matching class (e.g. cloudflare-tunnel), the
 // ingressClusterIPFallback does NOT inject Traefik ClusterIP, allowing

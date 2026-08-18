@@ -130,14 +130,23 @@ func (gw *Gateway) anyNonMatchingIngressForHostname(hostname string) bool {
 		if !ok {
 			continue
 		}
-		// If ingress has no class, treat as non-matching (conservative)
+		// If ingress has no class, fall back to deprecated annotation.
+		// cert-manager v1.15.x writes this annotation on ACME solver ingresses
+		// instead of spec.ingressClassName.
 		if ingress.Spec.IngressClassName == nil {
-			return true
-		}
-		// If this ingress class is NOT in the configured list, it's managed
-		// by a different controller — block the fallback
-		if !slices.Contains(gw.resourceFilters.ingressClasses, *ingress.Spec.IngressClassName) {
-			return true
+			annClass, hasAnn := ingress.Annotations["kubernetes.io/ingress.class"]
+			if !hasAnn || annClass == "" {
+				return true // no class at all → conservative block
+			}
+			if !slices.Contains(gw.resourceFilters.ingressClasses, annClass) {
+				return true // annotation class not in configured list → block
+			}
+			// annotation class matches → fall through to allow
+		} else {
+			// IngressClassName is set — check if it's in the configured list
+			if !slices.Contains(gw.resourceFilters.ingressClasses, *ingress.Spec.IngressClassName) {
+				return true // different controller — block fallback
+			}
 		}
 	}
 	// All ingresses for this hostname match configured classes (traefik)

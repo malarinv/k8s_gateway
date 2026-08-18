@@ -729,8 +729,14 @@ func lookupIngressIndex(ctrl cache.SharedIndexInformer, ingclasses []string) fun
 		for _, obj := range objs {
 			ingress, _ := obj.(*networking.Ingress)
 
-			if len(ingclasses) > 0 && !slices.Contains(ingclasses, *ingress.Spec.IngressClassName) {
-				log.Debugf("Skipping ingress of '%s' ingressClass", *ingress.Spec.IngressClassName)
+			className := ""
+			if ingress.Spec.IngressClassName != nil {
+				className = *ingress.Spec.IngressClassName
+			} else if ann, ok := ingress.Annotations["kubernetes.io/ingress.class"]; ok {
+				className = ann
+			}
+			if len(ingclasses) > 0 && className != "" && !slices.Contains(ingclasses, className) {
+				log.Debugf("Skipping ingress of '%s' ingressClass", className)
 				continue
 			}
 
