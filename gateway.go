@@ -253,16 +253,23 @@ func (gw *Gateway) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	// fallback only triggers when internal clients truly can't reach
 	// the LB IPs.
 	// ingressClusterIPFallback: append the ingress controller's ClusterIP
-	// for cluster-internal clients (private/source IPs) that can't reach
-	// LoadBalancer external IPs. When client filtering stripped all LB
-	// IPs (strict mode with ECS), the ClusterIP is the only answer.
-	// When there's no ECS (e.g. vcluster CoreDNS bypasses blocky),
+	// for cluster-internal clients (private or loopback source IPs) that
+	// can't reach LoadBalancer external IPs. Loopback covers the sidecar
+	// case (blocky → k8s_gateway via 127.0.0.1:5353). When client filtering
+	// stripped all LB IPs (strict mode with ECS), the ClusterIP is the only
+	// answer. When there's no ECS (e.g. vcluster CoreDNS bypasses blocky),
 	// the LB IPs survive filtering but are unreachable — the ClusterIP
 	// gives internal clients a reachable answer.
 	if gw.ingressClusterIPFallback && !gw.anyNonMatchingIngressForHostname(qname) {
 		srcIP, _, _ := net.SplitHostPort(w.RemoteAddr().String())
 		src, err := netip.ParseAddr(srcIP)
-		if err == nil && src.IsPrivate() {
+		// Accept loopback in addition to RFC1918 private: when blocky forwards
+		// whiteblossom.net queries to its sibling k8s_gateway sidecar via
+		// conditional.mapping → 127.0.0.1:5353, the source IP k8s_gateway
+		// sees is loopback. Loopback is not in any RFC1918 range, so the
+		// IsPrivate() check alone would reject it. Loopback is always
+		// internal in the sidecar context, so treat it the same as private.
+		if err == nil && (src.IsPrivate() || src.IsLoopback()) {
 			if clusterIP := discoverIngressControllerClusterIP(gw.resourceFilters.ingressClasses, gw.serviceControllers, gw.kubeClient); clusterIP.IsValid() {
 				addrs = append(addrs, clusterIP)
 				log.Debugf("ingressClusterIPFallback: appended ClusterIP %v for internal client %v", clusterIP, src)

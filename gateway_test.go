@@ -13,8 +13,10 @@ import (
 	"github.com/coredns/coredns/plugin/test"
 
 	"github.com/miekg/dns"
+	core "k8s.io/api/core/v1"
 	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/cache"
 )
 
@@ -595,5 +597,267 @@ func TestServeDNSCloudflareTunnelFallthrough(t *testing.T) {
 	// ingress exists but doesn't match traefik class
 	if !errors.As(err, &Fallen{}) {
 		t.Errorf("expected fall-through for cloudflare-tunnel domain, got err=%v, rcode=%d", err, w.Msg.Rcode)
+	}
+}
+
+// TestServeDNSIngressClusterIPFallbackLoopback verifies that when the
+// k8s_gateway sidecar is called by its sibling blocky container (source IP
+// 127.0.0.1) for a hostname with a traefik-class Ingress, the
+// ingressClusterIPFallback fires and appends the discovered Traefik
+// ClusterIP. This covers the blocky → k8s_gateway via 127.0.0.1:5353 path
+// that vcluster CoreDNS uses after Step 1 reroutes whiteblossom.net
+// queries through blocky.
+//
+// To isolate the IsLoopback() check from the all-LB-IPs-filtered fallback
+// (else if len(addrs) == 0 branch), the Ingress is given a status LB IP
+// that survives client filtering (clientFiltering is disabled, so the LB IP
+// stays in addrs and the only way the ClusterIP gets appended is via the
+// IsPrivate() || IsLoopback() branch). With only IsPrivate() check, the
+// loopback source is rejected and the response contains ONLY the LB IP, not
+// the ClusterIP — that is the failure mode Step 3b fixes.
+func TestServeDNSIngressClusterIPFallbackLoopback(t *testing.T) {
+	resetDiscoveryCache()
+
+	traefikClass := "traefik"
+	ingress := &networking.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "code",
+			Namespace: "default",
+		},
+		Spec: networking.IngressSpec{
+			IngressClassName: &traefikClass,
+			Rules: []networking.IngressRule{{Host: "code.dev.whiteblossom.net"}},
+		},
+		Status: networking.IngressStatus{
+			LoadBalancer: networking.IngressLoadBalancerStatus{
+				Ingress: []networking.IngressLoadBalancerIngress{
+					{IP: "192.168.15.126"},
+				},
+			},
+		},
+	}
+
+	ingressIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc})
+	if err := ingressIndexer.Add(ingress); err != nil {
+		t.Fatalf("failed to add ingress to indexer: %v", err)
+	}
+	ingressInformer := &fakeSharedIndexInformer{indexer: ingressIndexer}
+
+	ingClass := &networking.IngressClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "traefik",
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "traefik",
+			},
+			Annotations: map[string]string{
+				"meta.helm.sh/release-namespace": "kube-system",
+			},
+		},
+		Spec: networking.IngressClassSpec{
+			Controller: "traefik.io/ingress-controller",
+		},
+	}
+	traefikTCP := &core.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "traefik-tcp",
+			Namespace: "kube-system",
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "traefik",
+				"service.name":           "tcp",
+			},
+		},
+		Spec: core.ServiceSpec{
+			Type:      core.ServiceTypeLoadBalancer,
+			ClusterIP: "10.43.131.255",
+		},
+	}
+
+	kubeClient := fake.NewSimpleClientset(ingClass)
+	serviceControllers := []cache.SharedIndexInformer{makeServiceInformer(traefikTCP)}
+
+	ctrl := &KubeController{hasSynced: true, client: kubeClient}
+	gw := newGateway()
+	gw.Zones = []string{"whiteblossom.net."}
+	gw.Next = test.NextHandler(dns.RcodeSuccess, Fallen{})
+	gw.ExternalAddrFunc = gw.SelfAddress
+	gw.Controller = ctrl
+	gw.ingressClusterIPFallback = true
+	gw.clientFiltering = false // disable filtering so LB IP survives — isolates the IsLoopback path
+	gw.resourceFilters.ingressClasses = []string{"traefik"}
+	gw.serviceControllers = serviceControllers
+	gw.kubeClient = kubeClient
+	gw.Fall = fall.F{Zones: []string{"."}}
+
+	resource := gw.lookupResource("Ingress")
+	if resource == nil {
+		t.Fatal("Ingress resource not found in Gateway")
+	}
+	resource.controller = ingressIndexer
+	resource.lookup = lookupIngressIndex(ingressInformer, gw.resourceFilters.ingressClasses)
+
+	ctx := context.TODO()
+	r := new(dns.Msg)
+	r.SetQuestion("code.dev.whiteblossom.net.", dns.TypeA)
+	w := dnstest.NewRecorder(&test.ResponseWriter{
+		RemoteIP: "127.0.0.1",
+	})
+
+	_, err := gw.ServeDNS(ctx, w, r)
+
+	// Should NOT fall through: the traefik-class Ingress allows the
+	// fallback to fire, and loopback source IP is accepted as internal.
+	if errors.As(err, &Fallen{}) {
+		t.Fatalf("did not expect fall-through for traefik-class hostname from loopback source, got err=%v", err)
+	}
+	if w.Msg == nil {
+		t.Fatal("expected a DNS response message, got nil")
+	}
+
+	// The response should contain BOTH the LB IP (192.168.15.126) AND the
+	// Traefik ClusterIP (10.43.131.255). The ClusterIP only gets appended
+	// via the IsPrivate() || IsLoopback() branch (clientFiltering is off
+	// so the LB IP survives, so the else if len(addrs) == 0 branch is
+	// not taken).
+	foundLB := false
+	foundClusterIP := false
+	for _, rr := range w.Msg.Answer {
+		a, ok := rr.(*dns.A)
+		if !ok {
+			continue
+		}
+		switch a.A.String() {
+		case "192.168.15.126":
+			foundLB = true
+		case "10.43.131.255":
+			foundClusterIP = true
+		}
+	}
+	if !foundLB {
+		t.Errorf("expected A record 192.168.15.126 in response, got %v", w.Msg.Answer)
+	}
+	if !foundClusterIP {
+		t.Errorf("expected A record 10.43.131.255 (Traefik ClusterIP) in response — IsLoopback source must be accepted; got %v", w.Msg.Answer)
+	}
+}
+
+// TestServeDNSIngressClusterIPFallbackTraefikClassPrivateIP is a positive
+// control: a private source IP querying a traefik-class hostname should
+// also fire the fallback (the existing IsPrivate path). Combined with
+// TestServeDNSIngressClusterIPFallbackLoopback this confirms both source
+// classes are accepted.
+func TestServeDNSIngressClusterIPFallbackTraefikClassPrivateIP(t *testing.T) {
+	resetDiscoveryCache()
+
+	traefikClass := "traefik"
+	ingress := &networking.Ingress{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "code",
+			Namespace: "default",
+		},
+		Spec: networking.IngressSpec{
+			IngressClassName: &traefikClass,
+			Rules: []networking.IngressRule{{Host: "code.dev.whiteblossom.net"}},
+		},
+		Status: networking.IngressStatus{
+			LoadBalancer: networking.IngressLoadBalancerStatus{
+				Ingress: []networking.IngressLoadBalancerIngress{
+					{IP: "192.168.15.126"},
+				},
+			},
+		},
+	}
+
+	ingressIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{ingressHostnameIndex: ingressHostnameIndexFunc})
+	if err := ingressIndexer.Add(ingress); err != nil {
+		t.Fatalf("failed to add ingress to indexer: %v", err)
+	}
+	ingressInformer := &fakeSharedIndexInformer{indexer: ingressIndexer}
+
+	ingClass := &networking.IngressClass{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "traefik",
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "traefik",
+			},
+			Annotations: map[string]string{
+				"meta.helm.sh/release-namespace": "kube-system",
+			},
+		},
+		Spec: networking.IngressClassSpec{
+			Controller: "traefik.io/ingress-controller",
+		},
+	}
+	traefikTCP := &core.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "traefik-tcp",
+			Namespace: "kube-system",
+			Labels: map[string]string{
+				"app.kubernetes.io/name": "traefik",
+				"service.name":           "tcp",
+			},
+		},
+		Spec: core.ServiceSpec{
+			Type:      core.ServiceTypeLoadBalancer,
+			ClusterIP: "10.43.131.255",
+		},
+	}
+
+	kubeClient := fake.NewSimpleClientset(ingClass)
+	serviceControllers := []cache.SharedIndexInformer{makeServiceInformer(traefikTCP)}
+
+	ctrl := &KubeController{hasSynced: true, client: kubeClient}
+	gw := newGateway()
+	gw.Zones = []string{"whiteblossom.net."}
+	gw.Next = test.NextHandler(dns.RcodeSuccess, Fallen{})
+	gw.ExternalAddrFunc = gw.SelfAddress
+	gw.Controller = ctrl
+	gw.ingressClusterIPFallback = true
+	gw.clientFiltering = false
+	gw.resourceFilters.ingressClasses = []string{"traefik"}
+	gw.serviceControllers = serviceControllers
+	gw.kubeClient = kubeClient
+	gw.Fall = fall.F{Zones: []string{"."}}
+
+	resource := gw.lookupResource("Ingress")
+	if resource == nil {
+		t.Fatal("Ingress resource not found in Gateway")
+	}
+	resource.controller = ingressIndexer
+	resource.lookup = lookupIngressIndex(ingressInformer, gw.resourceFilters.ingressClasses)
+
+	ctx := context.TODO()
+	r := new(dns.Msg)
+	r.SetQuestion("code.dev.whiteblossom.net.", dns.TypeA)
+	w := dnstest.NewRecorder(&test.ResponseWriter{
+		RemoteIP: "10.0.0.1",
+	})
+
+	_, err := gw.ServeDNS(ctx, w, r)
+	if errors.As(err, &Fallen{}) {
+		t.Fatalf("did not expect fall-through for traefik-class hostname from private source, got err=%v", err)
+	}
+	if w.Msg == nil {
+		t.Fatal("expected a DNS response message, got nil")
+	}
+
+	foundLB := false
+	foundClusterIP := false
+	for _, rr := range w.Msg.Answer {
+		a, ok := rr.(*dns.A)
+		if !ok {
+			continue
+		}
+		switch a.A.String() {
+		case "192.168.15.126":
+			foundLB = true
+		case "10.43.131.255":
+			foundClusterIP = true
+		}
+	}
+	if !foundLB {
+		t.Errorf("expected A record 192.168.15.126 in response, got %v", w.Msg.Answer)
+	}
+	if !foundClusterIP {
+		t.Errorf("expected A record 10.43.131.255 (Traefik ClusterIP) in response, got %v", w.Msg.Answer)
 	}
 }
