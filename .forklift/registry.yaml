@@ -1,0 +1,169 @@
+# forklift registry for malarinv/k8s_gateway (fork) vs k8s-gateway/k8s_gateway (upstream).
+# Schema: $FORKLIFT/schema/registry.schema.yaml. Re-render after editing:
+#   bun $FORKLIFT/bin/forklift-render --registry .forklift/registry.yaml
+
+generatedAt: "2026-10-03T03:26:16Z"
+
+# Baseline: fork commits on the pushed fork branch over upstream, i.e.
+# `git rev-list --count origin/master..malarinv/master`. Doctor check 5
+# compares the same range on the local checkout (origin/master..master);
+# local master tracks malarinv/master. Last rebaselined 2026-10-13 when the
+# loopback-source-IP fix (f40e005) landed on the pushed branch.
+expected_fork_commit_count: 18
+
+# Fork-owned work enumerated from `git log --name-only origin/master..malarinv/master`,
+# grouped by file overlap (gateway.go/kubernetes.go connect every commit, so the
+# grouping is thematic where overlap is total). Every feature is status: draft:
+# this registry is the migration worklist; doctor checks 3 and 4 report without
+# failing until each feature's protecting tests and wiring are confirmed.
+features:
+  - name: "Node interface discovery and ECS client filtering"
+    description: >-
+      Auto-discovers node interface subnets for ECS-based client DNS filtering
+      (2010988, 6d0284a, 206ad0b), configurable clientFilteringMode
+      failOpen/strict (65b63b9), ZeroTier interface detection and annotation
+      rename to k8s-gateway.whiteblossom.net (eef6f1f), source-IP fallback
+      client when no ECS is present (5ffb3c5), interface-exporter chart and
+      RBAC (2010988, a9bd6ab).
+    owned_paths:
+      - "clientfilter.go"
+      - "clientfilter_test.go"
+      - "gateway.go"
+      - "kubernetes.go"
+      - "kubernetes_test.go"
+      - "setup.go"
+      - "setup_test.go"
+      - "README.md"
+      - ".github/workflows/build-image.yml"
+      - "charts/k8s-gateway/templates/configmap.yaml"
+      - "charts/k8s-gateway/templates/interface-exporter-daemonset.yaml"
+      - "charts/k8s-gateway/templates/rbac.yaml"
+      - "charts/k8s-gateway/values.yaml"
+      - "charts/k8s-gateway/tests/configmap_test.yaml"
+      - "charts/k8s-gateway/tests/interface-exporter_test.yaml"
+      - "charts/k8s-gateway/tests/labels_test.yaml"
+      - "charts/k8s-gateway/tests/rbac_test.yaml"
+    protecting_tests:
+      - "clientfilter_test.go"
+      - "kubernetes_test.go"
+    status: "draft"
+
+  - name: "ingressClusterIPFallback internal-client DNS resolution"
+    description: >-
+      Falls back internal-client queries to ClusterIP/ingress-class resolution
+      when ECS data is absent (d93c336), with ingressclasses RBAC (a8cf3b7),
+      all-IngressClass discovery (09bef20), post-filtering placement
+      (fdd7eb4), source-IP ClusterIP append (28ad362), class-aware skipping
+      (b1e8bae, 6f1905a), indexer.Add error handling in tests (3c7a1aa), and
+      kubernetes.io/ingress.class annotation fallback (34ff94d).
+    owned_paths:
+      - "gateway.go"
+      - "gateway_test.go"
+      - "kubernetes.go"
+      - "kubernetes_test.go"
+      - "setup.go"
+      - "charts/k8s-gateway/templates/configmap.yaml"
+      - "charts/k8s-gateway/templates/rbac.yaml"
+      - "charts/k8s-gateway/values.yaml"
+      - "charts/k8s-gateway/tests/configmap_test.yaml"
+    protecting_tests:
+      - "gateway_test.go"
+      - "kubernetes_test.go"
+    status: "draft"
+
+  - name: "Informer cache resync tuning"
+    description: "Sets defaultResyncPeriod to 5m to prevent stale informer caches (8fdd186)."
+    owned_paths:
+      - "kubernetes.go"
+    protecting_tests:
+      - "kubernetes_test.go"
+    status: "draft"
+
+# Files upstream owns - always take upstream. None: every fork-touched path is
+# claimed by a feature.
+divergences: []
+
+# Upstream paths intentionally absent from the fork. None: the fork adds/modifies
+# only.
+removals: []
+
+# Symbols grafted into shared files (populated during migration).
+owned_symbols: []
+
+# ---------------------------------------------------------------------------
+# harness - remotes/branches are data: fork = malarinv/master,
+# upstream = origin/master (this repo is a fork; see docs/portability.md).
+# ---------------------------------------------------------------------------
+harness:
+  version: 1
+
+  fork:
+    name: "malarinv/k8s_gateway"
+    short: "fork"
+    remote: "malarinv"
+    branch: "master"
+
+  upstream:
+    name: "k8s-gateway/k8s_gateway"
+    short: "up"
+    remote: "origin"
+    branch: "master"
+
+  project:
+    languages: ["go"]
+    # Go module rooted at the repo root; flat root package. NOTE: doctor check 1
+    # prefix-matching only honors "." (see pilot report) - "." is also the
+    # correct root for this layout.
+    source_roots: ["."]
+    test_globs: ["*_test.go", "charts/*/tests/*.yaml"]
+    typecheck_command: "go build ./..."
+    test_command: "go test ./..."
+    lint_command: "golangci-lint run --timeout=5m0s"
+    conflict_marker_globs:
+      - "*.go"
+      - "charts/**/*.yaml"
+      - "README.md"
+      - ".github/workflows/*.yml"
+    package_aliases:
+      "github.com/k8s-gateway/k8s_gateway": "."
+
+  checks:
+    # Features whose owned_paths match this are behavior-bearing (check 3):
+    # any Go source in this repo.
+    behavioral_source_regex: '\\.go$'
+    # No native addon in this fork (check skips).
+    native_sentinel: null
+    footprint_baseline: ".forklift/footprint-baseline.json"
+    excludes: [".forklift/", ".omp/"]
+
+  # No sync runner exists in this fork yet (see pilot report); the skill renders
+  # the real manual rebase command. No sync_runner key: every runner-flag
+  # section (tag strategy, sync options, --verify/--revert/--status, rollback)
+  # drops out of the render instead of advertising flags `git rebase` lacks.
+  sync_command: "git rebase origin/master"
+  # No fork maintenance doc exists; this points at the harness-generated
+  # operator README (written by bin/forklift-install).
+  fork_doc: ".forklift/README.md"
+
+# ---------------------------------------------------------------------------
+# knowledge - project-specific conflict semantics rendered at {{knowledge}}.
+# ---------------------------------------------------------------------------
+knowledge: |
+  ## Conflict Resolution Decision Tree
+
+  When a conflict occurs, apply this logic in order:
+  1. Is the path in § Feature Stack (fork-owned)? → prefer ours; re-apply the fork feature on top of upstream's change.
+  2. Is upstream's change a rename/refactor of a symbol we call (`ingressClusterIPFallback`, `buildNodeInterfaceLookup`, `clientFilteringMode`)? → take upstream's structure, then update our callsites and refresh § Owned Symbols.
+  3. Did upstream change semantics we depend on (ingress-class filtering, ECS client classification, chart values contract)? → ESCALATE using the format below.
+  4. Otherwise → prefer upstream.
+
+  ## Project Facts
+
+  - Go module `github.com/k8s-gateway/k8s_gateway` rooted at the repo root: flat root package (`*.go`), tests in `*_test.go` beside sources. Typecheck: `go build ./...`; tests: `go test ./...`; upstream CI lint: `golangci-lint run --timeout=5m0s` (`make ci`).
+  - `charts/k8s-gateway/` is the Helm chart; `charts/k8s-gateway/tests/` holds helm-unittest YAML. In chart conflicts take upstream's template structure and re-apply fork values (`clientFilteringMode`, `ingressClusterIPFallback`, interface-exporter).
+  - Fork features concentrate in `clientfilter.go`, `gateway.go`, `kubernetes.go`, `setup.go`. A conflict in those files almost certainly touches a registered feature - check § Feature Stack before resolving.
+  - Every feature is `status: draft` (migration worklist): doctor checks 3 and 4 report findings without failing until each feature is promoted to `active`.
+
+  ## Porting Protocol (upstream deleted a file we still own)
+
+  `git log --diff-filter=D --name-only origin/master` reveals files upstream deleted that the fork still registers (doctor check 6 reports these as `DELETED-UPSTREAM`). Per file, choose one: keep the fork copy and re-register ownership with an `obsoleted_fixes` note; absorb upstream's replacement by moving the registry entry to the new upstream path; or drop the feature if upstream retired the capability deliberately. Never resolve a deletion silently.
